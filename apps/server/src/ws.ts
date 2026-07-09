@@ -74,6 +74,7 @@ import {
   projectActivityEvent,
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
+import { SHELL_SUMMARY_ACTIVITY_KINDS } from "./orchestration/Layers/ProjectionPipeline.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -320,6 +321,23 @@ const SHELL_RESUME_MAX_GAP = 1_000;
 // hundreds of thousands of events behind have OOM-killed servers on large
 // databases. Past this gap the client is reset with a fresh thread snapshot.
 const THREAD_RESUME_MAX_GAP = 1_000;
+
+function isShellRelevantEvent(event: OrchestrationEvent): boolean {
+  if (
+    event.type === "thread.message-sent" &&
+    event.payload.streaming &&
+    event.payload.role === "assistant"
+  ) {
+    return false;
+  }
+  if (
+    event.type === "thread.activity-appended" &&
+    !SHELL_SUMMARY_ACTIVITY_KINDS.has(event.payload.activity.kind)
+  ) {
+    return false;
+  }
+  return true;
+}
 
 function toAuthAccessStreamEvent(
   change: PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange,
@@ -702,6 +720,9 @@ const makeWsRpcLayer = (
           }
           const latestByAggregate = new Map<string, OrchestrationEvent>();
           for (const event of events) {
+            if (!isShellRelevantEvent(event)) {
+              continue;
+            }
             latestByAggregate.set(`${event.aggregateKind}:${event.aggregateId}`, event);
           }
           const survivors = Array.from(latestByAggregate.values()).sort(
@@ -1372,34 +1393,46 @@ const makeWsRpcLayer = (
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
                 const headSequence = yield* orchestrationEngine.latestSequence;
-                const replayGap = headSequence - afterSequence;
-                if (replayGap >= 0 && replayGap <= THREAD_RESUME_MAX_GAP) {
-                  const catchUpStream = orchestrationEngine
-                    .readEvents(afterSequence, replayGap)
-                    .pipe(
+                if (afterSequence <= headSequence) {
+                  const catchUpEvents = yield* Stream.runCollect(
+                    orchestrationEngine.readAggregateEvents(
+                      "thread",
+                      input.threadId,
+                      afterSequence,
+                      THREAD_RESUME_MAX_GAP + 1,
+                    ),
+                  ).pipe(
+                    Effect.map((events) => Array.from(events)),
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: `Failed to replay thread ${input.threadId} events`,
+                          cause,
+                        }),
+                    ),
+                  );
+                  if (catchUpEvents.length > THREAD_RESUME_MAX_GAP) {
+                    // This thread alone has too much history after the cursor;
+                    // use the bounded snapshot path below.
+                  } else {
+                    const catchUpStream = Stream.fromIterable(catchUpEvents).pipe(
                       Stream.filter(isThisThreadDetailEvent),
                       Stream.map((event) => ({
                         kind: "event" as const,
                         event: projectActivityEvent(event),
                       })),
-                      Stream.mapError(
-                        (cause) =>
-                          new OrchestrationGetSnapshotError({
-                            message: `Failed to replay thread ${input.threadId} events`,
-                            cause,
-                          }),
-                      ),
                     );
-                  const afterCatchUp =
-                    input.requestCompletionMarker === true
-                      ? Stream.concat(
-                          Stream.fromEffect(
-                            Queue.offer(liveBuffer, { kind: "synchronized" as const }),
-                          ).pipe(Stream.drain),
-                          bufferedLiveStream,
-                        )
-                      : bufferedLiveStream;
-                  return Stream.concat(catchUpStream, afterCatchUp);
+                    const afterCatchUp =
+                      input.requestCompletionMarker === true
+                        ? Stream.concat(
+                            Stream.fromEffect(
+                              Queue.offer(liveBuffer, { kind: "synchronized" as const }),
+                            ).pipe(Stream.drain),
+                            bufferedLiveStream,
+                          )
+                        : bufferedLiveStream;
+                    return Stream.concat(catchUpStream, afterCatchUp);
+                  }
                 }
                 // Gap too large (or cursor ahead of authoritative state): fall
                 // through to the snapshot path so the client converges from a

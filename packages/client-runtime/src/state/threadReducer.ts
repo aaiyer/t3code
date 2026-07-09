@@ -616,20 +616,32 @@ export function applyThreadDetailEvent(
       // thread.reverted that discards turns can still resolve a value from
       // the turns that survive.
       const supersedesContextWindow = isResolvableContextWindowActivity(activity);
-      const activities = pipe(
-        thread.activities,
-        Arr.filter(
+      const lastActivity = thread.activities.at(-1);
+      const canAppend =
+        (lastActivity === undefined || activityOrder(lastActivity, activity) <= 0) &&
+        !thread.activities.some(
           (entry) =>
-            entry.id !== activity.id &&
-            !(
-              supersedesContextWindow &&
+            entry.id === activity.id ||
+            (supersedesContextWindow &&
               entry.turnId === activity.turnId &&
-              isResolvableContextWindowActivity(entry)
+              isResolvableContextWindowActivity(entry)),
+        );
+      const activities = canAppend
+        ? Arr.append(thread.activities, activity)
+        : pipe(
+            thread.activities,
+            Arr.filter(
+              (entry) =>
+                entry.id !== activity.id &&
+                !(
+                  supersedesContextWindow &&
+                  entry.turnId === activity.turnId &&
+                  isResolvableContextWindowActivity(entry)
+                ),
             ),
-        ),
-        Arr.append(activity),
-        Arr.sort(activityOrder),
-      );
+            Arr.append(activity),
+            Arr.sort(activityOrder),
+          );
 
       return {
         kind: "updated",
