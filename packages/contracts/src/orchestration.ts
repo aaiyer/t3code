@@ -1277,6 +1277,7 @@ export const ThreadGoalSetRequestedPayload = Schema.Struct({
   ),
   status: Schema.optional(ThreadGoalStatus),
   tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  modelSelection: Schema.optional(ModelSelection),
   createdAt: IsoDateTime,
 });
 

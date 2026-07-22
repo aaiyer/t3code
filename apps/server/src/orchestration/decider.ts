@@ -1081,6 +1081,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ...(command.goal.tokenBudget !== undefined
               ? { tokenBudget: command.goal.tokenBudget }
               : {}),
+            ...(command.modelSelection !== undefined
+              ? { modelSelection: command.modelSelection }
+              : {}),
             createdAt: command.createdAt,
           },
         });
