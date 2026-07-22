@@ -1084,6 +1084,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ...(command.modelSelection !== undefined
               ? { modelSelection: command.modelSelection }
               : {}),
+            blocksTurnStart: true,
             createdAt: command.createdAt,
           },
         });
