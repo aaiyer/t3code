@@ -13,9 +13,14 @@ jobs:
     name: Build T3 Code Linux ARM64 server bundle
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
+    container:
+      image: public.ecr.aws/amazonlinux/amazonlinux@sha256:8214d75d3cb180d39e866d244dffbcd535be4af89154b583ab79f397f1cc93ab
     env:
       T3CODE_TELEMETRY_ENABLED: "false"
     steps:
+      - name: Install Amazon Linux build prerequisites
+        run: dnf install -y file findutils gcc gcc-c++ git gzip jq make python3 tar xz
+
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -33,9 +38,12 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.93.1
 
       - name: Verify the runtime-default change
         run: |
+          test "$(node --version)" = v24.13.1
           vp fmt --check \
             packages/contracts/src/orchestration.ts \
             packages/contracts/src/orchestration.test.ts \
@@ -61,7 +69,7 @@ jobs:
           test "$(uname -m)" = aarch64
 
           deploy_root="$RUNNER_TEMP/t3-deploy"
-          archive_name=t3code-server-0.0.32-aaiyer.0-linux-arm64
+          archive_name=t3code-server-0.0.32-aaiyer.0-linux-arm64-al2023
           archive_root="$RUNNER_TEMP/$archive_name"
           output_root="$RUNNER_TEMP/runtime-output"
 
@@ -99,7 +107,7 @@ jobs:
               source_repository: $source_repository,
               source_commit: $source_commit,
               version: "0.0.32",
-              platform: "linux-arm64-glibc",
+              platform: "linux-arm64-al2023",
               entrypoint: "bin/t3",
               t3_connect_public_config: false
             }' >"$archive_root/manifest.json"
@@ -121,12 +129,12 @@ jobs:
       - name: Attest the runtime archive
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
-          subject-path: ${{ runner.temp }}/runtime-output/t3code-server-0.0.32-aaiyer.0-linux-arm64.tar.gz
+          subject-path: ${{ runner.temp }}/runtime-output/t3code-server-0.0.32-aaiyer.0-linux-arm64-al2023.tar.gz
 
       - name: Upload the runtime archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: t3code-server-0.0.32-aaiyer.0-linux-arm64
+          name: t3code-server-0.0.32-aaiyer.0-linux-arm64-al2023
           path: ${{ runner.temp }}/runtime-output/*
           if-no-files-found: error
           retention-days: 7
