@@ -73,8 +73,10 @@ jobs:
           archive_root="$RUNNER_TEMP/$archive_name"
           output_root="$RUNNER_TEMP/runtime-output"
 
-          test "$(pnpm --version)" = 11.10.0
-          pnpm --filter t3 deploy --prod --legacy "$deploy_root"
+          pnpm_cli="$HOME/.vite-plus/package_manager/pnpm/11.10.0/pnpm/bin/pnpm.cjs"
+          test -f "$pnpm_cli"
+          test "$(node "$pnpm_cli" --version)" = 11.10.0
+          node "$pnpm_cli" --filter t3 deploy --prod --legacy "$deploy_root"
           install -d "$deploy_root/dist/resource-monitor/linux-arm64"
           install -m 0755 \
             native/resource-monitor/target/release/t3-resource-monitor \
