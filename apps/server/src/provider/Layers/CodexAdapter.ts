@@ -547,8 +547,12 @@ function mapCollabAgentEvent(
   // Identity repeated on every status patch so rows are self-describing when
   // the start row ages out of activity retention (review finding: a
   // reconstructed agent had a UUID name and no role/path).
+  const model = typeof payload.model === "string" ? payload.model : undefined;
+  const effort = typeof payload.effort === "string" ? payload.effort : undefined;
   const statusLinkage = {
     role,
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
     ...(knownName ? { title: knownName } : {}),
     ...(agentPath ? { agentPath } : {}),
     timelineBypass: true,
@@ -565,6 +569,8 @@ function mapCollabAgentEvent(
             description: title,
             title,
             role,
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
             ...(agentPath ? { agentPath } : {}),
             ...(typeof payload.parentThreadId === "string"
               ? { parentAgentId: payload.parentThreadId }
@@ -598,6 +604,8 @@ function mapCollabAgentEvent(
               description: title,
               title,
               role,
+              ...(model ? { model } : {}),
+              ...(effort ? { effort } : {}),
               ...(agentPath ? { agentPath } : {}),
               timelineBypass: true,
             },
@@ -613,6 +621,14 @@ function mapCollabAgentEvent(
         },
       ];
     }
+    case "collabAgent/settingsUpdated":
+      return [
+        {
+          ...base,
+          type: "task.updated",
+          payload: { taskId, ...statusLinkage },
+        },
+      ];
     case "collabAgent/turnStarted":
       return [
         {
