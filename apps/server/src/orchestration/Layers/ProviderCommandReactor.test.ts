@@ -491,6 +491,7 @@ describe("ProviderCommandReactor", () => {
 
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
+    await runEffect(Effect.yieldNow);
     const drain = () => Effect.runPromise(reactor.drain);
 
     return {
@@ -677,7 +678,7 @@ describe("ProviderCommandReactor", () => {
       [{ id: "effort", value: "max" }],
     );
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.goal.set",
         commandId: CommandId.make("cmd-goal-turn-model-selection"),
@@ -715,7 +716,7 @@ describe("ProviderCommandReactor", () => {
       ),
     );
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.goal.set",
         commandId: CommandId.make("cmd-goal-turn-failure"),
@@ -742,7 +743,7 @@ describe("ProviderCommandReactor", () => {
     const now = "2026-01-01T00:00:00.000Z";
     harness.setThreadGoal.mockImplementation(() => Effect.interrupt);
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.goal.set",
         commandId: CommandId.make("cmd-goal-turn-interrupted"),
@@ -768,7 +769,7 @@ describe("ProviderCommandReactor", () => {
     const now = "2026-01-01T00:00:00.000Z";
     harness.clearThreadGoal.mockImplementation(() => Effect.interrupt);
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.goal.clear",
         commandId: CommandId.make("cmd-goal-clear-interrupted"),
