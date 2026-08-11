@@ -238,6 +238,8 @@ describe("ProviderCommandReactor", () => {
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
+    const setThreadGoal = vi.fn<ProviderServiceShape["setThreadGoal"]>(() => Effect.void);
+    const clearThreadGoal = vi.fn<ProviderServiceShape["clearThreadGoal"]>(() => Effect.void);
     const stopSession = vi.fn((input: unknown) =>
       Effect.sync(() => {
         const threadId =
@@ -315,6 +317,8 @@ describe("ProviderCommandReactor", () => {
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
+      setThreadGoal,
+      clearThreadGoal,
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (_provider) =>
         Effect.succeed({
@@ -487,6 +491,7 @@ describe("ProviderCommandReactor", () => {
 
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
+    await runEffect(Effect.yieldNow);
     const drain = () => Effect.runPromise(reactor.drain);
 
     return {
@@ -497,6 +502,8 @@ describe("ProviderCommandReactor", () => {
       interruptTurn,
       respondToRequest,
       respondToUserInput,
+      setThreadGoal,
+      clearThreadGoal,
       stopSession,
       renameBranch,
       refreshStatus,
@@ -661,6 +668,124 @@ describe("ProviderCommandReactor", () => {
       expect(thread?.session?.lastError).toBeNull();
     }),
   );
+
+  it("uses the selected model when starting a native goal", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const modelSelection = createModelSelection(
+      ProviderInstanceId.make("claudeAgent"),
+      "claude-opus-4-6",
+      [{ id: "effort", value: "max" }],
+    );
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.goal.set",
+        commandId: CommandId.make("cmd-goal-turn-model-selection"),
+        threadId: ThreadId.make("thread-1"),
+        objective: "Ship goal support",
+        status: "active",
+        tokenBudget: 50_000,
+        modelSelection,
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.setThreadGoal.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls).toHaveLength(1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({ modelSelection });
+    expect(harness.setThreadGoal.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-1"),
+      objective: "Ship goal support",
+      status: "active",
+      tokenBudget: 50_000,
+    });
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("records a native goal setup failure without starting a turn", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.setThreadGoal.mockImplementation(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: ProviderDriverKind.make("codex"),
+          method: "thread/goal/set",
+          detail: "Goal support is unavailable.",
+        }),
+      ),
+    );
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.goal.set",
+        commandId: CommandId.make("cmd-goal-turn-failure"),
+        threadId: ThreadId.make("thread-1"),
+        objective: "Ship goal support",
+        status: "active",
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5-codex"),
+        createdAt: now,
+      }),
+    );
+
+    await harness.drain();
+    expect(harness.setThreadGoal).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.goal.set.failed"),
+    ).toBe(true);
+  });
+
+  it("does not record a native goal setup failure when the request is interrupted", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.setThreadGoal.mockImplementation(() => Effect.interrupt);
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.goal.set",
+        commandId: CommandId.make("cmd-goal-turn-interrupted"),
+        threadId: ThreadId.make("thread-1"),
+        objective: "Ship goal support",
+        status: "active",
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5-codex"),
+        createdAt: now,
+      }),
+    );
+
+    await harness.drain();
+    expect(harness.setThreadGoal).toHaveBeenCalledTimes(1);
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.goal.set.failed"),
+    ).toBe(false);
+  });
+
+  it("does not record a native goal clear failure when the request is interrupted", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.clearThreadGoal.mockImplementation(() => Effect.interrupt);
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.goal.clear",
+        commandId: CommandId.make("cmd-goal-clear-interrupted"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: now,
+      }),
+    );
+
+    await harness.drain();
+    expect(harness.clearThreadGoal).toHaveBeenCalledTimes(1);
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.goal.clear.failed"),
+    ).toBe(false);
+  });
 
   it("generates a thread title on the first turn", async () => {
     const harness = await createHarness();

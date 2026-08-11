@@ -368,6 +368,34 @@ export function runtimeEventToActivities(
       : {};
   })();
   switch (event.type) {
+    case "thread.goal.updated":
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "goal.updated",
+          summary: `Goal ${event.payload.goal.status}`,
+          payload: { goal: event.payload.goal },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+
+    case "thread.goal.cleared":
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "goal.cleared",
+          summary: "Goal cleared",
+          payload: {},
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+
     case "request.opened": {
       if (event.payload.requestType === "tool_user_input") {
         return [];
@@ -1532,8 +1560,14 @@ const make = Effect.gen(function* () {
             if (activeTurnId !== null && eventTurnId !== undefined) {
               return sameId(activeTurnId, eventTurnId);
             }
-            // If no active turn is tracked, accept completion scoped to this thread.
-            return true;
+            // No active turn tracked: accept only completions that name their
+            // turn (covers a real completion whose turn.started was lost). An
+            // untargeted completion cannot prove it belongs to any turn this
+            // thread ran — the known emitter was the Claude resume handshake
+            // (system/init + result(num_turns: 0)), which is not a turn at
+            // all — and applying it here stomps the "starting" lifecycle
+            // state while a turn start is pending.
+            return eventTurnId !== undefined;
           default:
             return true;
         }
@@ -1891,6 +1925,25 @@ const make = Effect.gen(function* () {
           commandId: yield* providerCommandId(event, "thread-meta-update"),
           threadId: thread.id,
           title: event.payload.name,
+        });
+      }
+
+      if (event.type === "thread.goal.updated") {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.goal.sync",
+          commandId: yield* providerCommandId(event, "thread-goal-sync"),
+          threadId: thread.id,
+          goal: event.payload.goal,
+          createdAt: now,
+        });
+      }
+
+      if (event.type === "thread.goal.cleared") {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.goal.sync-clear",
+          commandId: yield* providerCommandId(event, "thread-goal-sync-clear"),
+          threadId: thread.id,
+          createdAt: now,
         });
       }
 

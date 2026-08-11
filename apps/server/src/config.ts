@@ -80,6 +80,9 @@ export class ServerConfig extends Context.Service<
     readonly desktopTelemetryControlFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
     readonly autoBootstrapProjectFromCwd: boolean;
+    readonly chatOpenActionEnabled?: boolean;
+    readonly chatRepositoryActionsEnabled?: boolean;
+    readonly projectActionsEnabled?: boolean;
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
     readonly tailscaleServePort: number;
@@ -183,6 +186,9 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
     ...derivedPaths,
     mode: "web",
     autoBootstrapProjectFromCwd: false,
+    chatOpenActionEnabled: true,
+    chatRepositoryActionsEnabled: true,
+    projectActionsEnabled: true,
     logWebSocketEvents: false,
     tailscaleServeEnabled: false,
     tailscaleServePort: 443,

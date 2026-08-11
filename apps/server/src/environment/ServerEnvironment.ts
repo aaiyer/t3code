@@ -142,7 +142,11 @@ export const make = Effect.gen(function* () {
     serverVersion: packageJson.version,
     capabilities: {
       repositoryIdentity: true,
+      chatOpenAction: serverConfig.chatOpenActionEnabled !== false,
+      chatRepositoryActions: serverConfig.chatRepositoryActionsEnabled !== false,
+      projectActions: serverConfig.projectActionsEnabled !== false,
       connectionProbe: true,
+      pullRequests: true,
       threadSettlement: true,
       threadSnooze: true,
       threadPinning: true,

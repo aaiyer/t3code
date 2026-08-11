@@ -17,6 +17,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
   type ThreadTokenUsageSnapshot,
+  type ThreadGoal,
   type ProviderUserInputAnswers,
   RuntimeItemId,
   RuntimeRequestId,
@@ -28,6 +29,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -192,6 +194,20 @@ function normalizeCodexTokenUsage(
   };
 }
 
+function normalizeCodexGoal(
+  goal: EffectCodexSchema.V2ThreadGoalUpdatedNotification["goal"],
+): ThreadGoal {
+  return {
+    objective: goal.objective,
+    status: goal.status,
+    tokenBudget: goal.tokenBudget == null ? null : Math.max(0, goal.tokenBudget),
+    tokensUsed: Math.max(0, goal.tokensUsed),
+    timeUsedSeconds: Math.max(0, goal.timeUsedSeconds),
+    createdAt: DateTime.formatIso(DateTime.makeUnsafe(goal.createdAt * 1_000)),
+    updatedAt: DateTime.formatIso(DateTime.makeUnsafe(goal.updatedAt * 1_000)),
+  };
+}
+
 function toTurnStatus(
   value: EffectCodexSchema.V2TurnCompletedNotification["turn"]["status"] | "cancelled",
 ): "completed" | "failed" | "cancelled" | "interrupted" {
@@ -242,6 +258,24 @@ function itemTitle(itemType: CanonicalItemType, item?: CodexLifecycleItem): stri
   if (itemType === "mcp_tool_call" && item?.type === "mcpToolCall") {
     return `${item.server} · ${item.tool}`;
   }
+  if (itemType === "dynamic_tool_call" && item?.type === "dynamicToolCall") {
+    const namespace = item.namespace?.trim();
+    return namespace ? `${namespace} · ${item.tool}` : item.tool;
+  }
+  if (itemType === "collab_agent_tool_call" && item?.type === "collabAgentToolCall") {
+    switch (item.tool) {
+      case "spawnAgent":
+        return "Spawn agent";
+      case "sendInput":
+        return "Send input to agent";
+      case "resumeAgent":
+        return "Resume agent";
+      case "wait":
+        return "Wait for agents";
+      case "closeAgent":
+        return "Close agent";
+    }
+  }
   switch (itemType) {
     case "assistant_message":
       return "Assistant message";
@@ -259,6 +293,8 @@ function itemTitle(itemType: CanonicalItemType, item?: CodexLifecycleItem): stri
       return "MCP tool call";
     case "dynamic_tool_call":
       return "Tool call";
+    case "collab_agent_tool_call":
+      return "Agent tool call";
     case "web_search":
       return "Web search";
     case "image_view":
@@ -531,8 +567,12 @@ function mapCollabAgentEvent(
   // Identity repeated on every status patch so rows are self-describing when
   // the start row ages out of activity retention (review finding: a
   // reconstructed agent had a UUID name and no role/path).
+  const model = typeof payload.model === "string" ? payload.model : undefined;
+  const effort = typeof payload.effort === "string" ? payload.effort : undefined;
   const statusLinkage = {
     role,
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
     ...(knownName ? { title: knownName } : {}),
     ...(agentPath ? { agentPath } : {}),
     timelineBypass: true,
@@ -549,6 +589,8 @@ function mapCollabAgentEvent(
             description: title,
             title,
             role,
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
             ...(agentPath ? { agentPath } : {}),
             ...(typeof payload.parentThreadId === "string"
               ? { parentAgentId: payload.parentThreadId }
@@ -582,6 +624,8 @@ function mapCollabAgentEvent(
               description: title,
               title,
               role,
+              ...(model ? { model } : {}),
+              ...(effort ? { effort } : {}),
               ...(agentPath ? { agentPath } : {}),
               timelineBypass: true,
             },
@@ -597,6 +641,14 @@ function mapCollabAgentEvent(
         },
       ];
     }
+    case "collabAgent/settingsUpdated":
+      return [
+        {
+          ...base,
+          type: "task.updated",
+          payload: { taskId, ...statusLinkage },
+        },
+      ];
     case "collabAgent/turnStarted":
       return [
         {
@@ -1016,6 +1068,33 @@ function mapToRuntimeEvents(
         payload: {
           usage: normalizedUsage,
         },
+      },
+    ];
+  }
+
+  if (event.method === "thread/goal/updated") {
+    const payload = readPayload(EffectCodexSchema.V2ThreadGoalUpdatedNotification, event.payload);
+    if (!payload) {
+      return [];
+    }
+    return [
+      {
+        type: "thread.goal.updated",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: { goal: normalizeCodexGoal(payload.goal) },
+      },
+    ];
+  }
+
+  if (event.method === "thread/goal/cleared") {
+    if (!readPayload(EffectCodexSchema.V2ThreadGoalClearedNotification, event.payload)) {
+      return [];
+    }
+    return [
+      {
+        type: "thread.goal.cleared",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {},
       },
     ];
   }
@@ -1971,6 +2050,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      threadGoals: "native",
     },
     startSession,
     sendTurn,
@@ -1979,6 +2059,30 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     rollbackThread,
     respondToRequest,
     respondToUserInput,
+    setThreadGoal: (input) =>
+      requireSession(input.threadId).pipe(
+        Effect.flatMap((session) =>
+          session.runtime.setThreadGoal({
+            ...(input.objective !== undefined ? { objective: input.objective } : {}),
+            ...(input.status !== undefined ? { status: input.status } : {}),
+            ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+          }),
+        ),
+        Effect.mapError((cause) =>
+          cause._tag === "ProviderAdapterSessionNotFoundError"
+            ? cause
+            : mapCodexRuntimeError(input.threadId, "thread/goal/set", cause),
+        ),
+      ),
+    clearThreadGoal: (threadId) =>
+      requireSession(threadId).pipe(
+        Effect.flatMap((session) => session.runtime.clearThreadGoal),
+        Effect.mapError((cause) =>
+          cause._tag === "ProviderAdapterSessionNotFoundError"
+            ? cause
+            : mapCodexRuntimeError(threadId, "thread/goal/clear", cause),
+        ),
+      ),
     stopSession,
     listSessions,
     hasSession,

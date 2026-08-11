@@ -51,6 +51,9 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     otlpExportIntervalMs: 10_000,
     otlpServiceName: "t3-server",
     devAllowedOrigins: [],
+    chatOpenActionEnabled: true,
+    chatRepositoryActionsEnabled: true,
+    projectActionsEnabled: true,
   } as const;
 
   const openBootstrapFd = Effect.fn(function* (payload: DesktopBackendBootstrapValue) {
@@ -104,6 +107,9 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
                     "https://host.example.ts.net, https://phone.example.ts.net ",
                   T3CODE_NO_BROWSER: "true",
                   T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
+                  T3CODE_DISABLE_OPEN_ACTION: "true",
+                  T3CODE_DISABLE_GITHUB_ACTIONS: "true",
+                  T3CODE_DISABLE_ACTIONS: "true",
                   T3CODE_LOG_WS_EVENTS: "true",
                 },
               }),
@@ -129,6 +135,9 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         startupPresentation: "browser",
         desktopBootstrapToken: undefined,
         autoBootstrapProjectFromCwd: false,
+        chatOpenActionEnabled: false,
+        chatRepositoryActionsEnabled: false,
+        projectActionsEnabled: false,
         logWebSocketEvents: true,
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,

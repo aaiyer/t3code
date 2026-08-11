@@ -18,6 +18,14 @@ export const ExecutionEnvironmentPlatform = Schema.Struct({
   os: ExecutionEnvironmentPlatformOs,
   arch: ExecutionEnvironmentPlatformArch,
 });
+
+/**
+ * Where a new thread runs: the project's current checkout ("local") or a
+ * fresh git worktree ("worktree"). Lives here (not settings.ts) so
+ * orchestration contracts can reference it without an import cycle.
+ */
+export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
+export type ThreadEnvMode = typeof ThreadEnvMode.Type;
 export type ExecutionEnvironmentPlatform = typeof ExecutionEnvironmentPlatform.Type;
 
 /** How a server can replace itself with another version when asked over RPC.
@@ -39,7 +47,14 @@ export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Launch policy for chat-header controls. Absence preserves compatibility with older servers. */
+  chatOpenAction: Schema.optionalKey(Schema.Boolean),
+  chatRepositoryActions: Schema.optionalKey(Schema.Boolean),
+  projectActions: Schema.optionalKey(Schema.Boolean),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
+  /** Server exposes the pull-request list, detail, activity, diff, and mutation APIs. Absent on
+      servers from before the pull-request workspace shipped, so clients must not probe them. */
+  pullRequests: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.settle / thread.unsettle commands. Absent on
       pre-settlement servers, so clients treat missing as unsupported and
       never send the commands under version skew. */

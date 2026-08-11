@@ -54,6 +54,8 @@ type ProviderIntentEvent = Extract<
     type:
       | "thread.meta-updated"
       | "thread.runtime-mode-set"
+      | "thread.goal-set-requested"
+      | "thread.goal-clear-requested"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
@@ -345,6 +347,8 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
+      | "provider.goal.set.failed"
+      | "provider.goal.clear.failed"
       | "provider.session.stop.failed";
     readonly summary: string;
     readonly detail: string;
@@ -1067,6 +1071,69 @@ const make = Effect.gen(function* () {
   const threadTitleRegenerationWorker = yield* makeDrainableWorker(
     processThreadTitleRegenerationSafely,
   );
+  const processGoalSetRequested = Effect.fn("processGoalSetRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.goal-set-requested" }>,
+  ) {
+    const run = Effect.gen(function* () {
+      yield* ensureSessionForThread(
+        event.payload.threadId,
+        event.payload.createdAt,
+        event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {},
+      );
+      if (event.payload.modelSelection !== undefined) {
+        threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
+      }
+      yield* providerService.setThreadGoal({
+        threadId: event.payload.threadId,
+        ...(event.payload.objective !== undefined ? { objective: event.payload.objective } : {}),
+        ...(event.payload.status !== undefined ? { status: event.payload.status } : {}),
+        ...(event.payload.tokenBudget !== undefined
+          ? { tokenBudget: event.payload.tokenBudget }
+          : {}),
+      });
+    });
+    yield* run.pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.failCause(cause);
+        }
+        return appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.goal.set.failed",
+          summary: "Goal update failed",
+          detail: formatFailureDetail(cause),
+          turnId: null,
+          createdAt: event.payload.createdAt,
+        });
+      }),
+    );
+  });
+
+  const processGoalClearRequested = Effect.fn("processGoalClearRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.goal-clear-requested" }>,
+  ) {
+    const run = Effect.gen(function* () {
+      yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt);
+      yield* providerService.clearThreadGoal({ threadId: event.payload.threadId });
+    });
+    yield* run.pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.failCause(cause);
+        }
+        return appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.goal.clear.failed",
+          summary: "Goal clear failed",
+          detail: formatFailureDetail(cause),
+          turnId: null,
+          createdAt: event.payload.createdAt,
+        }).pipe(Effect.asVoid);
+      }),
+    );
+  });
 
   const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
@@ -1354,6 +1421,13 @@ const make = Effect.gen(function* () {
         );
         return;
       }
+      case "thread.goal-set-requested": {
+        yield* processGoalSetRequested(event);
+        return;
+      }
+      case "thread.goal-clear-requested":
+        yield* processGoalClearRequested(event);
+        return;
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
         return;
@@ -1403,6 +1477,8 @@ const make = Effect.gen(function* () {
       if (
         (event.type === "thread.meta-updated" && event.payload.regenerateTitle === true) ||
         event.type === "thread.runtime-mode-set" ||
+        event.type === "thread.goal-set-requested" ||
+        event.type === "thread.goal-clear-requested" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||

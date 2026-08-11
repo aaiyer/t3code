@@ -127,6 +127,17 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  disableOpenAction: Config.boolean("T3CODE_DISABLE_OPEN_ACTION").pipe(Config.withDefault(false)),
+  disableRepositoryActions: Config.boolean("T3CODE_DISABLE_REPOSITORY_ACTIONS").pipe(
+    Config.withDefault(false),
+  ),
+  disableGithubActions: Config.boolean("T3CODE_DISABLE_GITHUB_ACTIONS").pipe(
+    Config.withDefault(false),
+  ),
+  disableProjectActions: Config.boolean("T3CODE_DISABLE_PROJECT_ACTIONS").pipe(
+    Config.withDefault(false),
+  ),
+  disableActions: Config.boolean("T3CODE_DISABLE_ACTIONS").pipe(Config.withDefault(false)),
   logWebSocketEvents: Config.boolean("T3CODE_LOG_WS_EVENTS").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -383,6 +394,9 @@ export const resolveServerConfig = (
       desktopTelemetryControlFd,
       resourceMonitorPath,
       autoBootstrapProjectFromCwd,
+      chatOpenActionEnabled: !env.disableOpenAction,
+      chatRepositoryActionsEnabled: !(env.disableRepositoryActions || env.disableGithubActions),
+      projectActionsEnabled: !(env.disableProjectActions || env.disableActions),
       logWebSocketEvents,
       tailscaleServeEnabled,
       tailscaleServePort,

@@ -119,6 +119,7 @@ describe("routeCodexChildNotification", () => {
       "turn/completed",
       "thread/status/changed",
       "thread/tokenUsage/updated",
+      "thread/settings/updated",
       "item/started",
       "item/completed",
       "thread/closed",
