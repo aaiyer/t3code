@@ -1,7 +1,11 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveRenameCommit, shouldShowOpenInPicker } from "./ChatHeader";
+import {
+  resolveChatHeaderActionCapabilities,
+  resolveRenameCommit,
+  shouldShowOpenInPicker,
+} from "./ChatHeader";
 
 describe("shouldShowOpenInPicker", () => {
   const primaryEnvironmentId = EnvironmentId.make("environment-primary");
@@ -44,6 +48,27 @@ describe("shouldShowOpenInPicker", () => {
         primaryEnvironmentId,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveChatHeaderActionCapabilities", () => {
+  it("shows actions for old servers that do not advertise launch policy", () => {
+    expect(resolveChatHeaderActionCapabilities(undefined)).toEqual({
+      open: true,
+      repository: true,
+      project: true,
+    });
+  });
+
+  it("honors each environment launch policy independently", () => {
+    expect(
+      resolveChatHeaderActionCapabilities({
+        repositoryIdentity: true,
+        chatOpenAction: false,
+        chatRepositoryActions: false,
+        projectActions: false,
+      }),
+    ).toEqual({ open: false, repository: false, project: false });
   });
 });
 

@@ -68,9 +68,44 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
 
       expect(first.environmentId).toBe(second.environmentId);
       expect(second.capabilities.repositoryIdentity).toBe(true);
+      expect(second.capabilities.chatOpenAction).toBe(true);
+      expect(second.capabilities.chatRepositoryActions).toBe(true);
+      expect(second.capabilities.projectActions).toBe(true);
       expect(second.capabilities.connectionProbe).toBe(true);
       expect(second.capabilities.pullRequests).toBe(true);
       expect(second.capabilities.threadTitleRegeneration).toBe(true);
+    }),
+  );
+
+  it.effect("advertises launch-disabled chat actions", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-server-environment-policy-test-",
+      });
+      const config = yield* makeServerConfig(baseDir);
+      yield* ServerConfig.ensureServerDirectories(config);
+      const descriptor = yield* Effect.gen(function* () {
+        const environment = yield* ServerEnvironment.ServerEnvironment;
+        return yield* environment.getDescriptor;
+      }).pipe(
+        Effect.provide(
+          ServerEnvironment.layer.pipe(
+            Layer.provide(
+              ServerConfig.layer({
+                ...config,
+                chatOpenActionEnabled: false,
+                chatRepositoryActionsEnabled: false,
+                projectActionsEnabled: false,
+              }),
+            ),
+          ),
+        ),
+      );
+
+      expect(descriptor.capabilities.chatOpenAction).toBe(false);
+      expect(descriptor.capabilities.chatRepositoryActions).toBe(false);
+      expect(descriptor.capabilities.projectActions).toBe(false);
     }),
   );
 

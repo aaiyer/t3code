@@ -47,6 +47,10 @@ export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Launch policy for chat-header controls. Absence preserves compatibility with older servers. */
+  chatOpenAction: Schema.optionalKey(Schema.Boolean),
+  chatRepositoryActions: Schema.optionalKey(Schema.Boolean),
+  projectActions: Schema.optionalKey(Schema.Boolean),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
   /** Server exposes the pull-request list, detail, activity, diff, and mutation APIs. Absent on
       servers from before the pull-request workspace shipped, so clients must not probe them. */

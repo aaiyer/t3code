@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type ExecutionEnvironmentCapabilities,
   type EditorId,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
@@ -11,6 +12,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import type { ChangeRequestStateLike } from "@t3tools/client-runtime/state/thread-settled";
+import { useAtomValue } from "@effect/atom-react";
 import { ChevronDownIcon } from "lucide-react";
 import {
   memo,
@@ -31,6 +33,7 @@ import ProjectScriptsControl, {
 } from "../ProjectScriptsControl";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../state/environments";
+import { serverEnvironment } from "../../state/server";
 import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { threadEnvironment } from "../../state/threads";
@@ -99,6 +102,16 @@ export function shouldShowOpenInPicker(input: {
   );
 }
 
+export function resolveChatHeaderActionCapabilities(
+  capabilities: ExecutionEnvironmentCapabilities | null | undefined,
+): { readonly open: boolean; readonly repository: boolean; readonly project: boolean } {
+  return {
+    open: capabilities?.chatOpenAction !== false,
+    repository: capabilities?.chatRepositoryActions !== false,
+    project: capabilities?.projectActions !== false,
+  };
+}
+
 export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
   activeThreadId,
@@ -124,6 +137,10 @@ export const ChatHeader = memo(function ChatHeader({
   onDeleteProjectScript,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(activeThreadEnvironmentId));
+  const actionCapabilities = resolveChatHeaderActionCapabilities(
+    serverConfig?.environment.capabilities,
+  );
   const fileScripts = useT3ProjectFileScripts(
     activeThreadEnvironmentId,
     activeProjectScripts ? activeProjectCwd : null,
@@ -307,7 +324,7 @@ export const ChatHeader = memo(function ChatHeader({
           rightPanelOpen ? "pr-0" : "pr-16",
         )}
       >
-        {activeProjectScripts && (
+        {actionCapabilities.project && activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
             fileScripts={fileScripts}
@@ -319,7 +336,7 @@ export const ChatHeader = memo(function ChatHeader({
             onDeleteScript={onDeleteProjectScript}
           />
         )}
-        {showOpenInPicker && (
+        {actionCapabilities.open && showOpenInPicker && (
           <OpenInPicker
             environmentId={activeThreadEnvironmentId}
             keybindings={keybindings}
@@ -327,7 +344,7 @@ export const ChatHeader = memo(function ChatHeader({
             openInCwd={openInCwd}
           />
         )}
-        {activeProjectName && (
+        {actionCapabilities.repository && activeProjectName && (
           <GitActionsControl
             gitCwd={gitCwd}
             activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
