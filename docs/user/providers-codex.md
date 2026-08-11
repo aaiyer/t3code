@@ -28,6 +28,34 @@ Log in with Codex normally:
 codex login
 ```
 
+## Follow A Long-Running Goal
+
+Codex threads support durable goals in the web and desktop chat composer. Start one with a clear
+objective and stopping condition:
+
+```text
+/goal Complete the migration and keep working until the focused tests pass.
+```
+
+Use the same composer to inspect or control it:
+
+```text
+/goal
+/goal pause
+/goal resume
+/goal clear
+```
+
+The goal row above the composer shows its current status, elapsed time, and token usage. It also has
+pause, resume, edit, and clear controls. Goal state comes from Codex and remains available after a
+reload or session resume.
+
+If Codex reports that goals are unavailable, update Codex and enable its goals feature on the server:
+
+```bash
+codex features enable goals
+```
+
 ## I Want Work And Personal Codex Accounts
 
 Use one real Codex home and one shadow home.
