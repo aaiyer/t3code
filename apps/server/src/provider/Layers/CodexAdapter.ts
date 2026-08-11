@@ -258,6 +258,24 @@ function itemTitle(itemType: CanonicalItemType, item?: CodexLifecycleItem): stri
   if (itemType === "mcp_tool_call" && item?.type === "mcpToolCall") {
     return `${item.server} · ${item.tool}`;
   }
+  if (itemType === "dynamic_tool_call" && item?.type === "dynamicToolCall") {
+    const namespace = item.namespace?.trim();
+    return namespace ? `${namespace} · ${item.tool}` : item.tool;
+  }
+  if (itemType === "collab_agent_tool_call" && item?.type === "collabAgentToolCall") {
+    switch (item.tool) {
+      case "spawnAgent":
+        return "Spawn agent";
+      case "sendInput":
+        return "Send input to agent";
+      case "resumeAgent":
+        return "Resume agent";
+      case "wait":
+        return "Wait for agents";
+      case "closeAgent":
+        return "Close agent";
+    }
+  }
   switch (itemType) {
     case "assistant_message":
       return "Assistant message";
@@ -275,6 +293,8 @@ function itemTitle(itemType: CanonicalItemType, item?: CodexLifecycleItem): stri
       return "MCP tool call";
     case "dynamic_tool_call":
       return "Tool call";
+    case "collab_agent_tool_call":
+      return "Agent tool call";
     case "web_search":
       return "Web search";
     case "image_view":
