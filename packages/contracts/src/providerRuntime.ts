@@ -413,6 +413,14 @@ export const ItemLifecyclePayload = Schema.Struct({
   status: Schema.optional(RuntimeItemStatus),
   title: Schema.optional(TrimmedNonEmptyStringSchema),
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
+  commandExecution: Schema.optional(
+    Schema.Struct({
+      command: TrimmedNonEmptyStringSchema,
+      cwd: Schema.optional(TrimmedNonEmptyStringSchema),
+      processId: Schema.optional(TrimmedNonEmptyStringSchema),
+      source: Schema.optional(TrimmedNonEmptyStringSchema),
+    }),
+  ),
   data: Schema.optional(Schema.Unknown),
   /**
    * Owning agent when this item ran inside a subagent (resolved from the

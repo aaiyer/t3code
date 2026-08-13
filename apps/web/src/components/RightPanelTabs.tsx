@@ -1,6 +1,7 @@
 import type { ContextMenuItem, PreviewSessionSnapshot, PullRequestState } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
+  Activity,
   Bot,
   FileDiff,
   Files,
@@ -61,15 +62,19 @@ interface RightPanelTabsProps {
   onAddFiles: () => void;
   onAddPullRequest: () => void;
   onAddAgents: () => void;
+  onAddProcesses: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
   pullRequestAvailable: boolean;
   agentsAvailable: boolean;
+  processesAvailable: boolean;
   pullRequestStatuses?: Readonly<Record<string, PullRequestTabStatus>>;
   /** Running + waiting subagents; badges the Agents card in the empty state. */
   liveAgentCount: number;
+  /** Provider-owned command executions that have not completed. */
+  liveProcessCount: number;
   children: ReactNode;
 }
 
@@ -88,6 +93,7 @@ const SURFACE_DISABLED_REASONS = {
   diff: "Diff is only available for server threads in Git repositories.",
   pullRequest: "This thread's branch has no pull request yet.",
   agents: "Agents are only available from a thread.",
+  processes: "Processes are only available from a thread.",
 } as const;
 
 /** Overlays that must win over the launcher's letter shortcuts. */
@@ -110,6 +116,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   diff: "Available for Git repositories.",
   pullRequest: "No pull request on this branch yet.",
   agents: "Available from a thread.",
+  processes: "Available from a thread.",
 } as const;
 
 type TabContextMenuAction = "copy-path" | "close" | "close-others" | "close-to-right" | "close-all";
@@ -156,13 +163,16 @@ function RightPanelEmptyState(props: {
   onAddFiles: () => void;
   onAddPullRequest: () => void;
   onAddAgents: () => void;
+  onAddProcesses: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
   pullRequestAvailable: boolean;
   agentsAvailable: boolean;
+  processesAvailable: boolean;
   liveAgentCount: number;
+  liveProcessCount: number;
 }) {
   // -1 means no highlight: it only appears on hover or arrow use.
   const [highlight, setHighlight] = useState(-1);
@@ -227,6 +237,16 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.agents,
       onClick: props.onAddAgents,
       badgeCount: props.liveAgentCount,
+    },
+    {
+      label: "Processes",
+      description: "Inspect commands run by the coding agent.",
+      icon: Activity,
+      shortcut: "R",
+      available: props.processesAvailable,
+      disabledReason: SURFACE_UNAVAILABLE_HINTS.processes,
+      onClick: props.onAddProcesses,
+      badgeCount: props.liveProcessCount,
     },
   ] as const;
 
@@ -422,6 +442,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "agents":
       return "Agents";
+    case "processes":
+      return "Processes";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -499,6 +521,8 @@ function SurfaceIcon({
     }
     case "agents":
       return <Bot className="size-3 shrink-0" />;
+    case "processes":
+      return <Activity className="size-3 shrink-0" />;
   }
 }
 
@@ -722,6 +746,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                     <Bot />
                     Agents
                   </SurfaceMenuItem>
+                  <SurfaceMenuItem
+                    available={props.processesAvailable}
+                    disabledReason={SURFACE_DISABLED_REASONS.processes}
+                    onClick={props.onAddProcesses}
+                  >
+                    <Activity />
+                    Processes
+                  </SurfaceMenuItem>
                 </MenuPopup>
               </Menu>
             ) : null}
@@ -738,13 +770,16 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddFiles={props.onAddFiles}
             onAddPullRequest={props.onAddPullRequest}
             onAddAgents={props.onAddAgents}
+            onAddProcesses={props.onAddProcesses}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}
             pullRequestAvailable={props.pullRequestAvailable}
             agentsAvailable={props.agentsAvailable}
+            processesAvailable={props.processesAvailable}
             liveAgentCount={props.liveAgentCount}
+            liveProcessCount={props.liveProcessCount}
           />
         ) : (
           props.children
