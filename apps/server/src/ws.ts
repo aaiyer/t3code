@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -49,6 +50,9 @@ import {
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
   RpcClientId,
+  AssetTextAttachmentWriteError,
+  AssetTextAttachmentClaimError,
+  AssetTextAttachmentReleaseError,
   EnvironmentAuthorizationError,
   ThreadId,
   type TerminalAttachStreamEvent,
@@ -88,6 +92,11 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
+import {
+  claimTextAttachment,
+  releaseTextAttachment,
+  writeClaimedTextAttachment,
+} from "./attachmentStore.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
@@ -108,6 +117,7 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
+import { withTextAttachmentMutationLock } from "./textAttachmentMutationLock.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
@@ -1909,6 +1919,64 @@ const makeWsRpcLayer = (
                 workspaceRoot: thread.value.worktreePath ?? project.value.workspaceRoot,
               });
             }),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.assetsWriteTextAttachment]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.assetsWriteTextAttachment,
+            withTextAttachmentMutationLock(
+              Effect.try({
+                try: () => ({
+                  path: writeClaimedTextAttachment({
+                    attachmentsDir: config.attachmentsDir,
+                    fileName: input.fileName,
+                    contents: input.contents,
+                    draftOwnerId: input.draftOwnerId,
+                  }),
+                }),
+                catch: (cause) =>
+                  new AssetTextAttachmentWriteError({ fileName: input.fileName, cause }),
+              }),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.assetsClaimTextAttachment]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.assetsClaimTextAttachment,
+            withTextAttachmentMutationLock(
+              Effect.try({
+                try: () => ({
+                  claimed: claimTextAttachment({
+                    attachmentsDir: config.attachmentsDir,
+                    path: input.path,
+                    draftOwnerId: input.draftOwnerId,
+                  }),
+                }),
+                catch: (cause) => new AssetTextAttachmentClaimError({ path: input.path, cause }),
+              }),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.assetsReleaseTextAttachment]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.assetsReleaseTextAttachment,
+            withTextAttachmentMutationLock(
+              Effect.gen(function* () {
+                const nowMs = yield* Clock.currentTimeMillis;
+                return yield* Effect.try({
+                  try: () => ({
+                    released: releaseTextAttachment({
+                      attachmentsDir: config.attachmentsDir,
+                      path: input.path,
+                      draftOwnerId: input.draftOwnerId,
+                      nowMs,
+                    }),
+                  }),
+                  catch: (cause) =>
+                    new AssetTextAttachmentReleaseError({ path: input.path, cause }),
+                });
+              }),
+            ),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.subscribeVcsStatus]: (input) =>

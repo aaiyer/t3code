@@ -211,6 +211,8 @@ const providedCapabilitiesLayer = capabilitiesLayer.pipe(
 const environmentOwnedDataCleanupLayer = Layer.succeed(
   EnvironmentOwnedDataCleanup,
   EnvironmentOwnedDataCleanup.of({
+    prepare: () => Effect.void,
+    resume: () => Effect.void,
     clear: (environmentId) =>
       Effect.all(
         [

@@ -12,6 +12,8 @@ import type { ThreadRouteTarget } from "../threadRoutes";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { EnvironmentId, ProjectId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -115,6 +117,92 @@ export function buildBulkTitleRegenerationContextMenuItem(input: {
     id: "regenerate-title",
     label: `Regenerate titles (${input.actionableCount})`,
   };
+}
+
+export function getProjectRemovalThreadRefs(input: {
+  environmentId: EnvironmentId;
+  projectId: ProjectId;
+  liveThreads: ReadonlyArray<{
+    environmentId: EnvironmentId;
+    id: ThreadId;
+    projectId: ProjectId;
+  }>;
+  archivedThreads: ReadonlyArray<{
+    environmentId: EnvironmentId;
+    id: ThreadId;
+    projectId: ProjectId;
+  }>;
+}): ScopedThreadRef[] {
+  const refs = new Map<string, ScopedThreadRef>();
+  for (const thread of [...input.liveThreads, ...input.archivedThreads]) {
+    if (thread.environmentId !== input.environmentId || thread.projectId !== input.projectId) {
+      continue;
+    }
+    const ref = scopeThreadRef(thread.environmentId, thread.id);
+    refs.set(scopedThreadKey(ref), ref);
+  }
+  return [...refs.values()];
+}
+
+export function getProjectRemovalConfirmationMessage(input: {
+  title: string;
+  workspaceRoot: string;
+  environmentLabel: string | null;
+  threadCount: number;
+}): string {
+  const context = [
+    `Path: ${input.workspaceRoot}`,
+    ...(input.environmentLabel ? [`Environment: ${input.environmentLabel}`] : []),
+  ];
+  if (input.threadCount > 0) {
+    return [
+      `Remove project "${input.title}" and delete its ${input.threadCount} thread${
+        input.threadCount === 1 ? "" : "s"
+      }?`,
+      ...context,
+      "This permanently clears conversation history for those threads.",
+      "This removes only this project entry.",
+      "This action cannot be undone.",
+    ].join("\n");
+  }
+  return [
+    `Remove project "${input.title}"?`,
+    ...context,
+    "This removes only this project entry.",
+  ].join("\n");
+}
+
+export async function runStableProjectRemovalConfirmation<TSnapshot, TResult>(input: {
+  readSnapshot: () => Promise<{
+    readonly threadRefs: ReadonlyArray<ScopedThreadRef>;
+    readonly value: TSnapshot;
+  } | null>;
+  confirm: (snapshot: {
+    readonly threadRefs: ReadonlyArray<ScopedThreadRef>;
+    readonly value: TSnapshot;
+  }) => Promise<boolean>;
+  remove: (snapshot: {
+    readonly threadRefs: ReadonlyArray<ScopedThreadRef>;
+    readonly value: TSnapshot;
+  }) => Promise<TResult>;
+}): Promise<
+  | { readonly status: "unavailable" | "cancelled" | "changed" }
+  | { readonly status: "removed"; readonly result: TResult }
+> {
+  const confirmedSnapshot = await input.readSnapshot();
+  if (confirmedSnapshot === null) return { status: "unavailable" };
+  if (!(await input.confirm(confirmedSnapshot))) return { status: "cancelled" };
+  const latestSnapshot = await input.readSnapshot();
+  if (latestSnapshot === null) return { status: "unavailable" };
+  const confirmedKeys = new Set(confirmedSnapshot.threadRefs.map(scopedThreadKey));
+  const latestKeys = new Set(latestSnapshot.threadRefs.map(scopedThreadKey));
+  if (
+    confirmedKeys.size !== latestKeys.size ||
+    [...confirmedKeys].some((key) => !latestKeys.has(key))
+  ) {
+    return { status: "changed" };
+  }
+  return { status: "removed", result: await input.remove(latestSnapshot) };
 }
 
 export interface ThreadStatusPill {

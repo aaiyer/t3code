@@ -5,11 +5,14 @@ import {
   type OrchestrationSessionStatus,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -44,14 +47,21 @@ import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
 import { ServerConfig } from "../../config.ts";
+import { SAFE_IMAGE_FILE_EXTENSIONS } from "../../imageMime.ts";
+import { writeFileStringAtomically } from "../../atomicWrite.ts";
+import { withTextAttachmentMutationLock } from "../../textAttachmentMutationLock.ts";
 import {
   OrchestrationProjectionPipeline,
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
 import {
   attachmentRelativePath,
+  collectTextAttachmentRelativePaths,
   parseAttachmentIdFromRelativePath,
   parseThreadSegmentFromAttachmentId,
+  reconcileTextAttachments,
+  TEXT_ATTACHMENT_METADATA_FILE,
+  TEXT_ATTACHMENT_PENDING_DIRECTORY,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
 
@@ -104,6 +114,15 @@ interface ProjectorDefinition {
 interface AttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
+  readonly textAttachmentRelativePathsToRemove: Set<string>;
+}
+
+function makeAttachmentSideEffects(): AttachmentSideEffects {
+  return {
+    deletedThreadIds: new Set<string>(),
+    prunedThreadRelativePaths: new Map<string, Set<string>>(),
+    textAttachmentRelativePathsToRemove: new Set<string>(),
+  };
 }
 
 const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsForProjection")(
@@ -351,8 +370,25 @@ function collectThreadAttachmentRelativePaths(
   return relativePaths;
 }
 
+function collectThreadTextAttachmentRelativePaths(
+  attachmentsDir: string,
+  messages: ReadonlyArray<ProjectionThreadMessage>,
+): Set<string> {
+  const relativePaths = new Set<string>();
+  for (const message of messages) {
+    for (const relativePath of collectTextAttachmentRelativePaths({
+      attachmentsDir,
+      text: message.text,
+    })) {
+      relativePaths.add(relativePath);
+    }
+  }
+  return relativePaths;
+}
+
 const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function* (
   sideEffects: AttachmentSideEffects,
+  projectionThreadMessageRepository: ProjectionThreadMessageRepository["Service"],
 ) {
   const serverConfig = yield* Effect.service(ServerConfig);
   const fileSystem = yield* Effect.service(FileSystem.FileSystem);
@@ -465,7 +501,212 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
       pruneThreadAttachments(threadId, keptThreadRelativePaths),
     { concurrency: 1 },
   );
+
+  if (
+    sideEffects.textAttachmentRelativePathsToRemove.size > 0 ||
+    sideEffects.deletedThreadIds.size > 0
+  ) {
+    const retainedTextAttachmentPaths = collectThreadTextAttachmentRelativePaths(
+      attachmentsRootDir,
+      (yield* projectionThreadMessageRepository.listRetained()).filter(
+        (message) => !sideEffects.deletedThreadIds.has(message.threadId),
+      ),
+    );
+    const nowMs = yield* Clock.currentTimeMillis;
+    yield* Effect.sync(() =>
+      reconcileTextAttachments({
+        attachmentsDir: attachmentsRootDir,
+        retainedRelativePaths: retainedTextAttachmentPaths,
+        nowMs,
+      }),
+    );
+  }
 });
+
+const GENERATED_IMAGE_ATTACHMENT_EXTENSIONS = new Set([...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"]);
+
+function isGeneratedImageAttachmentEntry(entry: string): boolean {
+  const normalizedEntry = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
+  if (normalizedEntry.length === 0 || normalizedEntry.includes("/")) {
+    return false;
+  }
+  const attachmentId = parseAttachmentIdFromRelativePath(normalizedEntry);
+  if (!attachmentId || !parseThreadSegmentFromAttachmentId(attachmentId)) {
+    return false;
+  }
+  const extension = normalizedEntry.slice(attachmentId.length).toLowerCase();
+  return GENERATED_IMAGE_ATTACHMENT_EXTENSIONS.has(extension);
+}
+
+const reconcileGeneratedAttachments = Effect.fn("reconcileGeneratedAttachments")(function* (
+  projectionThreadMessageRepository: ProjectionThreadMessageRepository["Service"],
+) {
+  const serverConfig = yield* Effect.service(ServerConfig);
+  const fileSystem = yield* Effect.service(FileSystem.FileSystem);
+  const path = yield* Effect.service(Path.Path);
+  const attachmentsRootDir = serverConfig.attachmentsDir;
+  const retainedMessages = yield* projectionThreadMessageRepository.listRetained();
+  const retainedImagePaths = new Set<string>();
+  for (const message of retainedMessages) {
+    for (const attachment of message.attachments ?? []) {
+      if (attachment.type === "image") {
+        retainedImagePaths.add(attachmentRelativePath(attachment));
+      }
+    }
+  }
+  const retainedTextAttachmentPaths = collectThreadTextAttachmentRelativePaths(
+    attachmentsRootDir,
+    retainedMessages,
+  );
+  const rootEntries = yield* fileSystem
+    .readDirectory(attachmentsRootDir, { recursive: false })
+    .pipe(Effect.orElseSucceed(() => [] as Array<string>));
+
+  for (const entry of rootEntries) {
+    const normalizedEntry = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
+    if (normalizedEntry === "text") {
+      continue;
+    }
+    if (!isGeneratedImageAttachmentEntry(normalizedEntry)) {
+      continue;
+    }
+    const absolutePath = path.join(attachmentsRootDir, normalizedEntry);
+    const fileInfo = yield* fileSystem.stat(absolutePath).pipe(Effect.orElseSucceed(() => null));
+    if (fileInfo?.type === "File" && !retainedImagePaths.has(normalizedEntry)) {
+      yield* fileSystem.remove(absolutePath, { force: true });
+    }
+  }
+  const nowMs = yield* Clock.currentTimeMillis;
+  yield* Effect.sync(() =>
+    reconcileTextAttachments({
+      attachmentsDir: attachmentsRootDir,
+      retainedRelativePaths: retainedTextAttachmentPaths,
+      nowMs,
+    }),
+  );
+});
+
+interface DueTextAttachment {
+  readonly directory: string;
+  readonly markerPath: string;
+  readonly relativeDirectory: string;
+}
+
+const TextAttachmentMetadataSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  claims: Schema.Array(Schema.String),
+  deleteAfter: Schema.NullOr(Schema.Number),
+});
+const decodeTextAttachmentMetadata = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(TextAttachmentMetadataSchema),
+);
+const encodeTextAttachmentMetadata = Schema.encodeEffect(
+  Schema.fromJsonString(TextAttachmentMetadataSchema),
+);
+
+const readDueTextAttachments = Effect.fn("readDueTextAttachments")(function* (
+  attachmentsDir: string,
+  nowMs: number,
+) {
+  const fileSystem = yield* Effect.service(FileSystem.FileSystem);
+  const path = yield* Effect.service(Path.Path);
+  const pendingDirectory = path.join(attachmentsDir, "text", TEXT_ATTACHMENT_PENDING_DIRECTORY);
+  const entries = yield* fileSystem
+    .readDirectory(pendingDirectory, { recursive: false })
+    .pipe(Effect.orElseSucceed(() => [] as Array<string>));
+  const candidates = yield* Effect.forEach(
+    entries,
+    (entry) =>
+      Effect.gen(function* () {
+        const match =
+          /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/i.exec(entry);
+        if (!match?.[1]) return null;
+        const markerPath = path.join(pendingDirectory, entry);
+        const marker = yield* fileSystem
+          .readFileString(markerPath)
+          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))));
+        if (
+          typeof marker !== "object" ||
+          marker === null ||
+          !("deleteAfter" in marker) ||
+          typeof marker.deleteAfter !== "number" ||
+          marker.deleteAfter > nowMs
+        ) {
+          return null;
+        }
+        return {
+          directory: path.join(attachmentsDir, "text", match[1]),
+          markerPath,
+          relativeDirectory: `text/${match[1]}`,
+        } satisfies DueTextAttachment;
+      }).pipe(Effect.orElseSucceed(() => null)),
+    { concurrency: 16 },
+  );
+  return candidates.filter((candidate): candidate is DueTextAttachment => candidate !== null);
+});
+
+const removeDueTextAttachments = Effect.fn("removeDueTextAttachments")(function* (
+  attachmentsDir: string,
+  candidates: ReadonlyArray<DueTextAttachment>,
+  retainedRelativePaths: ReadonlySet<string>,
+  nowMs: number,
+) {
+  const fileSystem = yield* Effect.service(FileSystem.FileSystem);
+  const path = yield* Effect.service(Path.Path);
+  const retainedDirectories = new Set(
+    [...retainedRelativePaths].map((relativePath) =>
+      path.dirname(relativePath).replace(/\\/g, "/"),
+    ),
+  );
+  yield* Effect.forEach(
+    candidates,
+    (candidate) =>
+      Effect.gen(function* () {
+        if (retainedDirectories.has(candidate.relativeDirectory)) {
+          const metadataPath = path.join(candidate.directory, TEXT_ATTACHMENT_METADATA_FILE);
+          const metadataResult = yield* fileSystem
+            .readFileString(metadataPath)
+            .pipe(Effect.flatMap(decodeTextAttachmentMetadata), Effect.result);
+          if (metadataResult._tag === "Failure") return;
+          if (metadataResult.success.deleteAfter !== null) {
+            const encoded = yield* encodeTextAttachmentMetadata({
+              ...metadataResult.success,
+              deleteAfter: null,
+            });
+            yield* writeFileStringAtomically({ filePath: metadataPath, contents: encoded });
+          }
+          yield* fileSystem.remove(candidate.markerPath, { force: true });
+          return;
+        }
+        const metadataResult = yield* fileSystem
+          .readFileString(path.join(candidate.directory, TEXT_ATTACHMENT_METADATA_FILE))
+          .pipe(Effect.flatMap(decodeTextAttachmentMetadata), Effect.result);
+        if (metadataResult._tag === "Failure") return;
+        const metadata = metadataResult.success;
+        if (metadata.claims.length > 0 || metadata.deleteAfter === null) {
+          yield* fileSystem.remove(candidate.markerPath, { force: true });
+          return;
+        }
+        if (metadata.deleteAfter > nowMs) return;
+        yield* fileSystem.remove(candidate.directory, { recursive: true, force: true });
+        yield* fileSystem.remove(candidate.markerPath, { force: true });
+      }),
+    { concurrency: 4 },
+  );
+});
+
+export function reconcileDueTextAttachments<E, R>(
+  attachmentsDir: string,
+  loadRetainedRelativePaths: Effect.Effect<ReadonlySet<string>, E, R>,
+) {
+  return Effect.gen(function* () {
+    const nowMs = yield* Clock.currentTimeMillis;
+    const dueCandidates = yield* readDueTextAttachments(attachmentsDir, nowMs);
+    if (dueCandidates.length === 0) return;
+    const retainedRelativePaths = yield* loadRetainedRelativePaths;
+    yield* removeDueTextAttachments(attachmentsDir, dueCandidates, retainedRelativePaths, nowMs);
+  });
+}
 
 const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjectionPipeline")(
   function* () {
@@ -484,6 +725,37 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
+    const bootstrapComplete = yield* Ref.make(false);
+
+    const reconcileTextAttachmentStore = withTextAttachmentMutationLock(
+      reconcileDueTextAttachments(
+        serverConfig.attachmentsDir,
+        projectionThreadMessageRepository
+          .listRetained()
+          .pipe(
+            Effect.map((retainedMessages) =>
+              collectThreadTextAttachmentRelativePaths(
+                serverConfig.attachmentsDir,
+                retainedMessages,
+              ),
+            ),
+          ),
+      ),
+    ).pipe(
+      Effect.catch((cause) => Effect.logWarning("failed to reconcile text attachments", { cause })),
+    );
+    yield* Effect.forkScoped(
+      Effect.sleep("30 seconds").pipe(
+        Effect.andThen(
+          Ref.get(bootstrapComplete).pipe(
+            Effect.flatMap((isComplete) =>
+              isComplete ? reconcileTextAttachmentStore : Effect.void,
+            ),
+          ),
+        ),
+        Effect.forever,
+      ),
+    );
 
     const applyProjectsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyProjectsProjection",
@@ -980,6 +1252,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadMessagesProjection",
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
+        case "thread.deleted": {
+          attachmentSideEffects.deletedThreadIds.add(event.payload.threadId);
+          const existingRows = yield* projectionThreadMessageRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          for (const relativePath of collectThreadTextAttachmentRelativePaths(
+            serverConfig.attachmentsDir,
+            existingRows,
+          )) {
+            attachmentSideEffects.textAttachmentRelativePathsToRemove.add(relativePath);
+          }
+          return;
+        }
+
         case "thread.message-sent": {
           const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
             messageId: event.payload.messageId,
@@ -1033,6 +1319,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             existingTurns,
             event.payload.turnCount,
           );
+          const keptTextAttachmentPaths = collectThreadTextAttachmentRelativePaths(
+            serverConfig.attachmentsDir,
+            keptRows,
+          );
+          for (const relativePath of collectThreadTextAttachmentRelativePaths(
+            serverConfig.attachmentsDir,
+            existingRows,
+          )) {
+            if (!keptTextAttachmentPaths.has(relativePath)) {
+              attachmentSideEffects.textAttachmentRelativePathsToRemove.add(relativePath);
+            }
+          }
           if (keptRows.length === existingRows.length) {
             return;
           }
@@ -1679,11 +1977,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const runProjectorForEvent = Effect.fn("runProjectorForEvent")(function* (
       projector: ProjectorDefinition,
       event: OrchestrationEvent,
+      applyAttachmentSideEffects: boolean,
     ) {
-      const attachmentSideEffects: AttachmentSideEffects = {
-        deletedThreadIds: new Set<string>(),
-        prunedThreadRelativePaths: new Map<string, Set<string>>(),
-      };
+      const attachmentSideEffects = makeAttachmentSideEffects();
 
       yield* sql.withTransaction(
         projector.apply(event, attachmentSideEffects).pipe(
@@ -1697,16 +1993,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
-      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("failed to apply projected attachment side-effects", {
-            projector: projector.name,
-            sequence: event.sequence,
-            eventType: event.type,
-            cause,
-          }),
-        ),
-      );
+      if (applyAttachmentSideEffects) {
+        yield* withTextAttachmentMutationLock(
+          runAttachmentSideEffects(attachmentSideEffects, projectionThreadMessageRepository),
+        ).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("failed to apply projected attachment side-effects", {
+              projector: projector.name,
+              sequence: event.sequence,
+              eventType: event.type,
+              cause,
+            }),
+          ),
+        );
+      }
     });
 
     const bootstrapProjector = (projector: ProjectorDefinition) =>
@@ -1720,32 +2020,40 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               eventStore.readFromSequence(
                 Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
               ),
-              (event) => runProjectorForEvent(projector, event),
+              (event) => runProjectorForEvent(projector, event, false),
             ),
           ),
         );
 
     const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
-      Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
+      Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event, true), {
         concurrency: 1,
       }).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.provideService(ServerConfig, serverConfig),
+        Effect.provideService(ProjectionThreadMessageRepository, projectionThreadMessageRepository),
         Effect.asVoid,
         Effect.catchTag("SqlError", (sqlError) =>
           Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
         ),
       );
 
-    const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.forEach(
-      projectors,
-      bootstrapProjector,
-      { concurrency: 1 },
-    ).pipe(
+    const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.gen(function* () {
+      yield* Effect.forEach(projectors, bootstrapProjector, { concurrency: 1 });
+      yield* Ref.set(bootstrapComplete, true);
+      yield* withTextAttachmentMutationLock(
+        reconcileGeneratedAttachments(projectionThreadMessageRepository),
+      ).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to reconcile generated attachments", { cause }),
+        ),
+      );
+    }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),
+      Effect.provideService(ProjectionThreadMessageRepository, projectionThreadMessageRepository),
       Effect.asVoid,
       Effect.tap(() =>
         Effect.logDebug("orchestration projection pipeline bootstrapped").pipe(

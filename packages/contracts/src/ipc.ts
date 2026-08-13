@@ -25,7 +25,16 @@ import type {
   ReviewDiffPreviewResult,
 } from "./review.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
-import type { AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
+import type {
+  AssetCreateUrlInput,
+  AssetCreateUrlResult,
+  AssetClaimTextAttachmentInput,
+  AssetClaimTextAttachmentResult,
+  AssetReleaseTextAttachmentInput,
+  AssetReleaseTextAttachmentResult,
+  AssetWriteTextAttachmentInput,
+  AssetWriteTextAttachmentResult,
+} from "./assets.ts";
 import type {
   ProjectListEntriesInput,
   ProjectListEntriesResult,
@@ -1214,6 +1223,15 @@ export interface EnvironmentApi {
   };
   assets: {
     createUrl: (input: AssetCreateUrlInput) => Promise<AssetCreateUrlResult>;
+    writeTextAttachment: (
+      input: AssetWriteTextAttachmentInput,
+    ) => Promise<AssetWriteTextAttachmentResult>;
+    claimTextAttachment: (
+      input: AssetClaimTextAttachmentInput,
+    ) => Promise<AssetClaimTextAttachmentResult>;
+    releaseTextAttachment: (
+      input: AssetReleaseTextAttachmentInput,
+    ) => Promise<AssetReleaseTextAttachmentResult>;
   };
   sourceControl: {
     lookupRepository: (

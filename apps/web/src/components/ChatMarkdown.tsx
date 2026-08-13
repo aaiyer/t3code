@@ -80,6 +80,7 @@ import {
   rewriteMarkdownFileUriHref,
   type MarkdownFileLinkMeta,
 } from "../markdown-links";
+import { isTextAttachmentPath } from "../textAttachmentPaths";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
 import { useRightPanelStore } from "../rightPanelStore";
@@ -1470,6 +1471,7 @@ function ChatMarkdown({
           onOpenInBrowser={
             threadRef &&
             isPreviewSupportedInRuntime() &&
+            !isTextAttachmentPath(fileLinkMeta.filePath) &&
             isBrowserPreviewFile(fileLinkMeta.filePath)
               ? () => openMarkdownFileInPreview(fileLinkMeta.filePath)
               : undefined

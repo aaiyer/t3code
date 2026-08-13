@@ -167,6 +167,10 @@
       "types": "./src/composerInlineTokens.ts",
       "import": "./src/composerInlineTokens.ts"
     },
+    "./markdownLinks": {
+      "types": "./src/markdownLinks.ts",
+      "import": "./src/markdownLinks.ts"
+    },
     "./terminalLabels": {
       "types": "./src/terminalLabels.ts",
       "import": "./src/terminalLabels.ts"
@@ -230,6 +234,7 @@
     "@t3tools/contracts": "workspace:*",
     "effect": "catalog:",
     "jose": "catalog:",
+    "mdast-util-from-markdown": "^2.0.3",
     "yaml": "catalog:"
   },
   "devDependencies": {

@@ -1,4 +1,5 @@
 import { inferEntryKindFromPath } from "../../pierre-icons";
+import { isTextAttachmentPath } from "../../textAttachmentPaths";
 import {
   CHAT_INLINE_CHIP_CLASS_NAME,
   CHAT_INLINE_CHIP_LABEL_CLASS_NAME,
@@ -11,6 +12,10 @@ import { PierreEntryIcon } from "./PierreEntryIcon";
 export const FILE_TAG_CHIP_CLASS_NAME = COMPOSER_INLINE_CHIP_CLASS_NAME;
 export const CHAT_FILE_TAG_CHIP_CLASS_NAME = CHAT_INLINE_CHIP_CLASS_NAME;
 
+export function inferFileTagEntryKind(path: string): "file" | "directory" {
+  return isTextAttachmentPath(path) ? "file" : inferEntryKindFromPath(path);
+}
+
 export function FileTagChipContent(props: {
   path: string;
   label: string;
@@ -21,7 +26,7 @@ export function FileTagChipContent(props: {
     <>
       <PierreEntryIcon
         pathValue={props.path}
-        kind={inferEntryKindFromPath(props.path)}
+        kind={inferFileTagEntryKind(props.path)}
         theme={props.theme}
         className={COMPOSER_INLINE_CHIP_ICON_CLASS_NAME}
       />

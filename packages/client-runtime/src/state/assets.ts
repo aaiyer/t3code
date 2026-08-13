@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
-import { createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import { createEnvironmentRpcCommand, createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
 
 const ASSET_URL_REFRESH_INTERVAL_MS = 30 * 60_000;
 const ASSET_URL_STALE_TIME_MS = 5 * 60_000;
@@ -72,6 +72,18 @@ export function createAssetEnvironmentAtoms<R, E>(
 
   return {
     createUrl,
+    writeTextAttachment: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:assets:write-text-attachment",
+      tag: WS_METHODS.assetsWriteTextAttachment,
+    }),
+    claimTextAttachment: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:assets:claim-text-attachment",
+      tag: WS_METHODS.assetsClaimTextAttachment,
+    }),
+    releaseTextAttachment: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:assets:release-text-attachment",
+      tag: WS_METHODS.assetsReleaseTextAttachment,
+    }),
     createUrls: (target: {
       readonly environmentId: EnvironmentId;
       readonly resources: ReadonlyArray<AssetResource>;

@@ -6,9 +6,19 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  collectTextAttachmentRelativePaths,
+  claimTextAttachment,
   createAttachmentId,
+  createTextAttachmentPath,
   parseThreadSegmentFromAttachmentId,
+  reconcileTextAttachments,
+  releaseTextAttachment,
   resolveAttachmentPathById,
+  TEXT_ATTACHMENT_DELETE_GRACE_MS,
+  TEXT_ATTACHMENT_METADATA_FILE,
+  TEXT_ATTACHMENT_PENDING_DIRECTORY,
+  writeClaimedTextAttachment,
+  textAttachmentDirectory,
 } from "./attachmentStore.ts";
 
 describe("attachmentStore", () => {
@@ -73,6 +83,255 @@ describe("attachmentStore", () => {
         attachmentId: "thread-1-missing",
       });
       expect(resolved).toBeNull();
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates normalized text attachment paths under the environment attachment store", () => {
+    const attachmentsDir = NodePath.join(NodeOS.tmpdir(), "t3code-attachments");
+    const attachmentPath = createTextAttachmentPath({
+      attachmentsDir,
+      fileName: "../unsafe name.ts",
+    });
+
+    expect(NodePath.relative(attachmentsDir, attachmentPath)).toMatch(
+      /^text[/\\][0-9a-f-]+[/\\]\.\.-unsafe-name\.ts$/,
+    );
+    expect(attachmentPath).not.toContain(`${NodePath.sep}..${NodePath.sep}`);
+  });
+
+  it("removes a written attachment when its initial claim fails", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-text-write-claim-"),
+    );
+    try {
+      expect(() =>
+        writeClaimedTextAttachment(
+          {
+            attachmentsDir,
+            fileName: "context.md",
+            contents: "context",
+            draftOwnerId: "draft-owner",
+          },
+          () => false,
+        ),
+      ).toThrow(/initial text attachment claim/);
+      expect(NodeFS.readdirSync(NodePath.join(attachmentsDir, "text"))).toEqual([]);
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds text attachment basenames and avoids Windows reserved names", () => {
+    const attachmentsDir = NodePath.join(NodeOS.tmpdir(), "t3code-attachments");
+    const reservedPath = createTextAttachmentPath({ attachmentsDir, fileName: "CON.ts" });
+    const longPath = createTextAttachmentPath({
+      attachmentsDir,
+      fileName: `${"a".repeat(300)}.tsx`,
+    });
+
+    expect(NodePath.basename(reservedPath)).toBe("_CON.ts");
+    expect(NodePath.basename(longPath)).toHaveLength(120);
+    expect(NodePath.basename(longPath)).toMatch(/\.tsx$/);
+  });
+
+  it("reserves internal text attachment metadata basenames", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-text-internal-name-"),
+    );
+    try {
+      const generatedPath = createTextAttachmentPath({
+        attachmentsDir,
+        fileName: TEXT_ATTACHMENT_METADATA_FILE,
+      });
+      expect(NodePath.basename(generatedPath)).toBe("_t3-attachment.json");
+
+      const attachmentPath = writeClaimedTextAttachment({
+        attachmentsDir,
+        fileName: TEXT_ATTACHMENT_METADATA_FILE,
+        contents: "user attachment contents",
+        draftOwnerId: "internal-name-owner",
+      });
+      const metadataPath = NodePath.join(
+        NodePath.dirname(attachmentPath),
+        TEXT_ATTACHMENT_METADATA_FILE,
+      );
+      expect(NodePath.basename(attachmentPath)).toBe("_t3-attachment.json");
+      expect(attachmentPath).not.toBe(metadataPath);
+      expect(NodeFS.readFileSync(attachmentPath, "utf8")).toBe("user attachment contents");
+      expect(NodeFS.existsSync(metadataPath)).toBe(true);
+      expect(
+        releaseTextAttachment({
+          attachmentsDir,
+          path: attachmentPath,
+          draftOwnerId: "internal-name-owner",
+          nowMs: 0,
+        }),
+      ).toBe(true);
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("validates and collects server-owned text attachment paths", () => {
+    const attachmentsDir = NodePath.join(NodeOS.tmpdir(), "t3code-(attachments)");
+    const attachmentPath = createTextAttachmentPath({ attachmentsDir, fileName: "notes.txt" });
+    const encodedPath = encodeURI(attachmentPath).replaceAll("\\", "%5C");
+
+    expect(textAttachmentDirectory({ attachmentsDir, path: attachmentPath })).toBe(
+      NodePath.dirname(attachmentPath),
+    );
+    expect(
+      collectTextAttachmentRelativePaths({
+        attachmentsDir,
+        text: `before[notes.txt](${encodedPath}),after`,
+      }),
+    ).toEqual(new Set([NodePath.relative(attachmentsDir, attachmentPath).replaceAll("\\", "/")]));
+    expect(
+      textAttachmentDirectory({ attachmentsDir, path: NodePath.join(attachmentsDir, "../nope") }),
+    ).toBeNull();
+  });
+
+  it("ignores generated paths that are not Markdown links or are inside code", () => {
+    const attachmentsDir = NodePath.join(NodeOS.tmpdir(), "t3code-attachments");
+    const attachmentPath = createTextAttachmentPath({ attachmentsDir, fileName: "notes.txt" });
+
+    expect(
+      collectTextAttachmentRelativePaths({
+        attachmentsDir,
+        text: [
+          `missing](${attachmentPath})`,
+          `\`[inline](${attachmentPath})\``,
+          "```md",
+          `[fenced](${attachmentPath})`,
+          "```",
+        ].join("\n"),
+      }),
+    ).toEqual(new Set());
+    expect(
+      collectTextAttachmentRelativePaths({
+        attachmentsDir,
+        text: `paragraph\n    [continued](${attachmentPath})`,
+      }),
+    ).toEqual(new Set([NodePath.relative(attachmentsDir, attachmentPath).replaceAll("\\", "/")]));
+  });
+
+  it("persists draft claims across reconciliation and restart-style reloads", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-text-claims-"),
+    );
+    try {
+      const attachmentPath = createTextAttachmentPath({ attachmentsDir, fileName: "draft.md" });
+      NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, "draft");
+      expect(
+        claimTextAttachment({
+          attachmentsDir,
+          path: attachmentPath,
+          draftOwnerId: "draft-owner",
+        }),
+      ).toBe(true);
+
+      reconcileTextAttachments({
+        attachmentsDir,
+        retainedRelativePaths: new Set(),
+        nowMs: TEXT_ATTACHMENT_DELETE_GRACE_MS * 10,
+      });
+
+      expect(NodeFS.existsSync(attachmentPath)).toBe(true);
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels pending deletion when a copied draft reclaims an attachment", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-text-reclaim-"),
+    );
+    try {
+      const attachmentPath = createTextAttachmentPath({ attachmentsDir, fileName: "draft.md" });
+      NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, "draft");
+      claimTextAttachment({ attachmentsDir, path: attachmentPath, draftOwnerId: "original" });
+      expect(
+        releaseTextAttachment({
+          attachmentsDir,
+          path: attachmentPath,
+          draftOwnerId: "original",
+          nowMs: 1_000,
+        }),
+      ).toBe(true);
+      expect(
+        claimTextAttachment({ attachmentsDir, path: attachmentPath, draftOwnerId: "copy" }),
+      ).toBe(true);
+
+      reconcileTextAttachments({
+        attachmentsDir,
+        retainedRelativePaths: new Set(),
+        nowMs: 1_000 + TEXT_ATTACHMENT_DELETE_GRACE_MS + 1,
+      });
+
+      expect(NodeFS.existsSync(attachmentPath)).toBe(true);
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("deletes only expired unclaimed and unreferenced text attachments", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-text-expiry-"),
+    );
+    try {
+      const attachmentPath = createTextAttachmentPath({ attachmentsDir, fileName: "orphan.md" });
+      NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, "orphan");
+
+      reconcileTextAttachments({
+        attachmentsDir,
+        retainedRelativePaths: new Set(),
+        nowMs: 1_000,
+      });
+      expect(NodeFS.existsSync(attachmentPath)).toBe(true);
+
+      reconcileTextAttachments({
+        attachmentsDir,
+        retainedRelativePaths: new Set(),
+        nowMs: 1_000 + TEXT_ATTACHMENT_DELETE_GRACE_MS + 1,
+      });
+      expect(NodeFS.existsSync(attachmentPath)).toBe(false);
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves malformed metadata during full reconciliation", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-text-invalid-metadata-"),
+    );
+    try {
+      const attachmentPath = createTextAttachmentPath({ attachmentsDir, fileName: "keep.md" });
+      const directory = NodePath.dirname(attachmentPath);
+      const metadataPath = NodePath.join(directory, TEXT_ATTACHMENT_METADATA_FILE);
+      const pendingPath = NodePath.join(
+        attachmentsDir,
+        "text",
+        TEXT_ATTACHMENT_PENDING_DIRECTORY,
+        `${NodePath.basename(directory)}.json`,
+      );
+      NodeFS.mkdirSync(directory, { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, "keep");
+      NodeFS.writeFileSync(metadataPath, "malformed");
+
+      reconcileTextAttachments({
+        attachmentsDir,
+        retainedRelativePaths: new Set(),
+        nowMs: Number.MAX_SAFE_INTEGER,
+      });
+
+      expect(NodeFS.existsSync(attachmentPath)).toBe(true);
+      expect(NodeFS.readFileSync(metadataPath, "utf8")).toBe("malformed");
+      expect(NodeFS.existsSync(pendingPath)).toBe(false);
     } finally {
       NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
     }

@@ -11,7 +11,9 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -29,6 +31,7 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import {
   ORCHESTRATION_PROJECTOR_NAMES,
   OrchestrationProjectionPipelineLive,
+  reconcileDueTextAttachments,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
@@ -36,6 +39,16 @@ import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ServerConfig } from "../../config.ts";
+import { withTextAttachmentMutationLock } from "../../textAttachmentMutationLock.ts";
+import {
+  claimTextAttachment,
+  reconcileTextAttachments,
+  releaseTextAttachment,
+  textAttachmentRelativePath,
+  TEXT_ATTACHMENT_DELETE_GRACE_MS,
+  TEXT_ATTACHMENT_METADATA_FILE,
+  TEXT_ATTACHMENT_PENDING_DIRECTORY,
+} from "../../attachmentStore.ts";
 
 const makeProjectionPipelinePrefixedTestLayer = (prefix: string) =>
   OrchestrationProjectionPipelineLive.pipe(
@@ -53,6 +66,221 @@ const exists = (filePath: string) =>
   });
 
 const BaseTestLayer = makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-test-");
+
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-text-expiry-sweep-")))(
+  "text attachment expiry sweep",
+  (it) => {
+    it.effect("loads retained messages only when a pending attachment is due", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { attachmentsDir } = yield* ServerConfig;
+        let retainedLoads = 0;
+        const loadRetained = Effect.sync(() => {
+          retainedLoads += 1;
+          return new Set<string>();
+        });
+
+        yield* reconcileDueTextAttachments(attachmentsDir, loadRetained);
+        assert.equal(retainedLoads, 0);
+
+        const attachmentPath = path.join(
+          attachmentsDir,
+          "text",
+          "00000000-0000-4000-8000-000000000010",
+          "orphan.txt",
+        );
+        yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true });
+        yield* fileSystem.writeFileString(attachmentPath, "orphan");
+        claimTextAttachment({
+          attachmentsDir,
+          path: attachmentPath,
+          draftOwnerId: "expiry-owner",
+        });
+        assert.isTrue(
+          releaseTextAttachment({
+            attachmentsDir,
+            path: attachmentPath,
+            draftOwnerId: "expiry-owner",
+            nowMs: -TEXT_ATTACHMENT_DELETE_GRACE_MS - 1,
+          }),
+        );
+        const pendingMarkerPath = path.join(
+          attachmentsDir,
+          "text",
+          TEXT_ATTACHMENT_PENDING_DIRECTORY,
+          "00000000-0000-4000-8000-000000000010.json",
+        );
+        yield* fileSystem.remove(pendingMarkerPath, { force: true });
+        assert.isFalse(yield* exists(pendingMarkerPath));
+        assert.isTrue(
+          releaseTextAttachment({
+            attachmentsDir,
+            path: attachmentPath,
+            draftOwnerId: "expiry-owner",
+            nowMs: 0,
+          }),
+        );
+        assert.isTrue(yield* exists(pendingMarkerPath));
+
+        yield* reconcileDueTextAttachments(attachmentsDir, loadRetained);
+
+        assert.equal(retainedLoads, 1);
+        assert.isFalse(yield* exists(attachmentPath));
+      }),
+    );
+
+    it.effect("preserves a due attachment when metadata cannot be decoded", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { attachmentsDir } = yield* ServerConfig;
+        const attachmentPath = path.join(
+          attachmentsDir,
+          "text",
+          "00000000-0000-4000-8000-000000000011",
+          "corrupt.txt",
+        );
+        yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true });
+        yield* fileSystem.writeFileString(attachmentPath, "preserve");
+        claimTextAttachment({
+          attachmentsDir,
+          path: attachmentPath,
+          draftOwnerId: "corrupt-owner",
+        });
+        releaseTextAttachment({
+          attachmentsDir,
+          path: attachmentPath,
+          draftOwnerId: "corrupt-owner",
+          nowMs: -TEXT_ATTACHMENT_DELETE_GRACE_MS - 1,
+        });
+        const metadataPath = path.join(path.dirname(attachmentPath), TEXT_ATTACHMENT_METADATA_FILE);
+        const markerPath = path.join(
+          attachmentsDir,
+          "text",
+          TEXT_ATTACHMENT_PENDING_DIRECTORY,
+          "00000000-0000-4000-8000-000000000011.json",
+        );
+        yield* fileSystem.writeFileString(metadataPath, "not-json");
+
+        yield* reconcileDueTextAttachments(attachmentsDir, Effect.succeed(new Set()));
+
+        assert.isTrue(yield* exists(attachmentPath));
+        assert.isTrue(yield* exists(markerPath));
+      }),
+    );
+
+    it.effect("clears pending expiry when a due attachment becomes retained", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { attachmentsDir } = yield* ServerConfig;
+        const attachmentPath = path.join(
+          attachmentsDir,
+          "text",
+          "00000000-0000-4000-8000-000000000012",
+          "retained.txt",
+        );
+        yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true });
+        yield* fileSystem.writeFileString(attachmentPath, "retained");
+        claimTextAttachment({
+          attachmentsDir,
+          path: attachmentPath,
+          draftOwnerId: "retained-owner",
+        });
+        releaseTextAttachment({
+          attachmentsDir,
+          path: attachmentPath,
+          draftOwnerId: "retained-owner",
+          nowMs: -TEXT_ATTACHMENT_DELETE_GRACE_MS - 1,
+        });
+        const relativePath = textAttachmentRelativePath({
+          attachmentsDir,
+          path: attachmentPath,
+        });
+        assert.isNotNull(relativePath);
+
+        yield* reconcileDueTextAttachments(
+          attachmentsDir,
+          Effect.succeed(new Set(relativePath ? [relativePath] : [])),
+        );
+
+        const directoryEntries = yield* fileSystem.readDirectory(path.dirname(attachmentPath), {
+          recursive: false,
+        });
+        assert.deepEqual(
+          [...directoryEntries].sort(),
+          [TEXT_ATTACHMENT_METADATA_FILE, "retained.txt"].sort(),
+        );
+
+        assert.isFalse(
+          releaseTextAttachment({
+            attachmentsDir,
+            path: attachmentPath,
+            draftOwnerId: "retained-owner",
+            nowMs: 0,
+          }),
+        );
+        reconcileTextAttachments({
+          attachmentsDir,
+          retainedRelativePaths: new Set(),
+          nowMs: 0,
+        });
+        yield* reconcileDueTextAttachments(attachmentsDir, Effect.succeed(new Set()));
+        assert.isTrue(yield* exists(attachmentPath));
+      }),
+    );
+
+    it.effect("serializes a concurrent claim ahead of due deletion", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { attachmentsDir } = yield* ServerConfig;
+        const attachmentPath = path.join(
+          attachmentsDir,
+          "text",
+          "00000000-0000-4000-8000-000000000013",
+          "race.txt",
+        );
+        yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true });
+        yield* fileSystem.writeFileString(attachmentPath, "race");
+        claimTextAttachment({
+          attachmentsDir,
+          path: attachmentPath,
+          draftOwnerId: "original-race-owner",
+        });
+        releaseTextAttachment({
+          attachmentsDir,
+          path: attachmentPath,
+          draftOwnerId: "original-race-owner",
+          nowMs: -TEXT_ATTACHMENT_DELETE_GRACE_MS - 1,
+        });
+        const claimStarted = yield* Deferred.make<void>();
+        const finishClaim = yield* Deferred.make<void>();
+        const claimFiber = yield* withTextAttachmentMutationLock(
+          Effect.gen(function* () {
+            yield* Deferred.succeed(claimStarted, undefined);
+            yield* Deferred.await(finishClaim);
+            return claimTextAttachment({
+              attachmentsDir,
+              path: attachmentPath,
+              draftOwnerId: "concurrent-race-owner",
+            });
+          }),
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(claimStarted);
+        const sweepFiber = yield* withTextAttachmentMutationLock(
+          reconcileDueTextAttachments(attachmentsDir, Effect.succeed(new Set())),
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.succeed(finishClaim, undefined);
+
+        assert.isTrue(yield* Fiber.join(claimFiber));
+        yield* Fiber.join(sweepFiber);
+        assert.isTrue(yield* exists(attachmentPath));
+      }),
+    );
+  },
+);
 
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   it.effect("bootstraps all projection states and writes projection rows", () =>
@@ -801,6 +1029,12 @@ it.layer(
       const removeAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000002";
       const otherThreadAttachmentId =
         "thread-revert-files-extra-00000000-0000-4000-8000-000000000003";
+      const removeTextAttachmentPath = path.join(
+        attachmentsDir,
+        "text",
+        "00000000-0000-4000-8000-000000000008",
+        "remove.txt",
+      );
 
       const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
         eventStore
@@ -943,7 +1177,7 @@ it.layer(
           threadId,
           messageId: MessageId.make("message-remove"),
           role: "assistant",
-          text: "Remove",
+          text: `[remove.txt](${encodeURI(removeTextAttachmentPath)})`,
           attachments: [
             {
               type: "image",
@@ -990,6 +1224,31 @@ it.layer(
       assert.isTrue(yield* exists(keepPath));
       assert.isFalse(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
+
+      // Simulate a crash after the projection transaction commits but before
+      // its filesystem cleanup completes.
+      yield* fileSystem.writeFileString(removePath, "remove after restart");
+      yield* fileSystem.makeDirectory(path.dirname(removeTextAttachmentPath), {
+        recursive: true,
+      });
+      yield* fileSystem.writeFileString(removeTextAttachmentPath, "remove after restart");
+      claimTextAttachment({
+        attachmentsDir,
+        path: removeTextAttachmentPath,
+        draftOwnerId: "copied-revert-draft",
+      });
+
+      yield* projectionPipeline.bootstrap;
+      reconcileTextAttachments({
+        attachmentsDir,
+        retainedRelativePaths: new Set(),
+        nowMs: Number.MAX_SAFE_INTEGER,
+      });
+
+      assert.isTrue(yield* exists(keepPath));
+      assert.isFalse(yield* exists(removePath));
+      assert.isTrue(yield* exists(removeTextAttachmentPath));
+      assert.isFalse(yield* exists(otherThreadPath));
     }),
   );
 });
@@ -1009,6 +1268,18 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         const attachmentId = "thread-delete-files-00000000-0000-4000-8000-000000000001";
         const otherThreadAttachmentId =
           "thread-delete-files-extra-00000000-0000-4000-8000-000000000002";
+        const textAttachmentPath = path.join(
+          attachmentsDir,
+          "text",
+          "00000000-0000-4000-8000-000000000003",
+          "notes.txt",
+        );
+        const unrelatedTextAttachmentPath = path.join(
+          attachmentsDir,
+          "text",
+          "00000000-0000-4000-8000-000000000004",
+          "other.txt",
+        );
 
         const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
           eventStore
@@ -1076,7 +1347,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
             threadId,
             messageId: MessageId.make("message-delete-files"),
             role: "user",
-            text: "Delete",
+            text: `Delete [notes.txt](${encodeURI(textAttachmentPath)})`,
             attachments: [
               {
                 type: "image",
@@ -1101,8 +1372,16 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
         yield* fileSystem.writeFileString(threadAttachmentPath, "delete");
         yield* fileSystem.writeFileString(otherThreadAttachmentPath, "other-thread");
+        yield* fileSystem.makeDirectory(path.dirname(textAttachmentPath), { recursive: true });
+        yield* fileSystem.makeDirectory(path.dirname(unrelatedTextAttachmentPath), {
+          recursive: true,
+        });
+        yield* fileSystem.writeFileString(textAttachmentPath, "delete text");
+        yield* fileSystem.writeFileString(unrelatedTextAttachmentPath, "keep text");
         assert.isTrue(yield* exists(threadAttachmentPath));
         assert.isTrue(yield* exists(otherThreadAttachmentPath));
+        assert.isTrue(yield* exists(textAttachmentPath));
+        assert.isTrue(yield* exists(unrelatedTextAttachmentPath));
 
         yield* appendAndProject({
           type: "thread.deleted",
@@ -1122,6 +1401,190 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
 
         assert.isFalse(yield* exists(threadAttachmentPath));
         assert.isTrue(yield* exists(otherThreadAttachmentPath));
+        assert.isTrue(yield* exists(textAttachmentPath));
+        assert.isTrue(yield* exists(unrelatedTextAttachmentPath));
+
+        yield* fileSystem.writeFileString(threadAttachmentPath, "delete after restart");
+        yield* fileSystem.makeDirectory(path.dirname(textAttachmentPath), { recursive: true });
+        yield* fileSystem.writeFileString(textAttachmentPath, "delete after restart");
+
+        yield* projectionPipeline.bootstrap;
+
+        assert.isFalse(yield* exists(threadAttachmentPath));
+        assert.isFalse(yield* exists(otherThreadAttachmentPath));
+        assert.isTrue(yield* exists(textAttachmentPath));
+        assert.isTrue(yield* exists(unrelatedTextAttachmentPath));
+      }),
+    );
+  },
+);
+
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-replay-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("does not delete shared text attachments while rebuilding projections", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const { attachmentsDir } = yield* ServerConfig;
+        const now = "2026-01-01T00:00:00.000Z";
+        const projectId = ProjectId.make("project-attachment-replay");
+        const deletedThreadId = ThreadId.make("thread-attachment-replay-deleted");
+        const retainedThreadId = ThreadId.make("thread-attachment-replay-retained");
+        const textAttachmentPath = path.join(
+          attachmentsDir,
+          "text",
+          "00000000-0000-4000-8000-000000000005",
+          "shared.txt",
+        );
+        const deletedTextAttachmentPath = path.join(
+          attachmentsDir,
+          "text",
+          "00000000-0000-4000-8000-000000000006",
+          "deleted.txt",
+        );
+        const deletedImageAttachmentId =
+          "thread-attachment-replay-deleted-00000000-0000-4000-8000-000000000007";
+        const deletedImageAttachmentPath = path.join(
+          attachmentsDir,
+          `${deletedImageAttachmentId}.png`,
+        );
+        const attachmentLink = `[shared.txt](${encodeURI(textAttachmentPath)})`;
+        const append = (event: Parameters<typeof eventStore.append>[0]) =>
+          eventStore.append(event).pipe(Effect.asVoid);
+
+        yield* append({
+          type: "project.created",
+          eventId: EventId.make("evt-attachment-replay-1"),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: now,
+          commandId: CommandId.make("cmd-attachment-replay-1"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-attachment-replay-1"),
+          metadata: {},
+          payload: {
+            projectId,
+            title: "Attachment Replay",
+            workspaceRoot: "/tmp/project-attachment-replay",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        for (const [index, threadId] of [deletedThreadId, retainedThreadId].entries()) {
+          yield* append({
+            type: "thread.created",
+            eventId: EventId.make(`evt-attachment-replay-thread-${index}`),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: now,
+            commandId: CommandId.make(`cmd-attachment-replay-thread-${index}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-attachment-replay-thread-${index}`),
+            metadata: {},
+            payload: {
+              threadId,
+              projectId,
+              title: `Attachment Replay ${index}`,
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5-codex",
+              },
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          });
+          yield* append({
+            type: "thread.message-sent",
+            eventId: EventId.make(`evt-attachment-replay-message-${index}`),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: now,
+            commandId: CommandId.make(`cmd-attachment-replay-message-${index}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-attachment-replay-message-${index}`),
+            metadata: {},
+            payload: {
+              threadId,
+              messageId: MessageId.make(`message-attachment-replay-${index}`),
+              role: "user",
+              text:
+                index === 0
+                  ? `${attachmentLink} [deleted.txt](${encodeURI(deletedTextAttachmentPath)})`
+                  : attachmentLink,
+              ...(index === 0
+                ? {
+                    attachments: [
+                      {
+                        type: "image" as const,
+                        id: deletedImageAttachmentId,
+                        name: "deleted.png",
+                        mimeType: "image/png",
+                        sizeBytes: 5,
+                      },
+                    ],
+                  }
+                : {}),
+              turnId: null,
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          });
+        }
+
+        yield* append({
+          type: "thread.deleted",
+          eventId: EventId.make("evt-attachment-replay-delete"),
+          aggregateKind: "thread",
+          aggregateId: deletedThreadId,
+          occurredAt: now,
+          commandId: CommandId.make("cmd-attachment-replay-delete"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-attachment-replay-delete"),
+          metadata: {},
+          payload: {
+            threadId: deletedThreadId,
+            deletedAt: now,
+          },
+        });
+
+        yield* fileSystem.makeDirectory(path.dirname(textAttachmentPath), { recursive: true });
+        yield* fileSystem.makeDirectory(path.dirname(deletedTextAttachmentPath), {
+          recursive: true,
+        });
+        yield* fileSystem.writeFileString(textAttachmentPath, "shared attachment");
+        yield* fileSystem.writeFileString(deletedTextAttachmentPath, "deleted attachment");
+        yield* fileSystem.writeFileString(deletedImageAttachmentPath, "deleted image");
+        claimTextAttachment({
+          attachmentsDir,
+          path: deletedTextAttachmentPath,
+          draftOwnerId: "copied-delete-draft",
+        });
+
+        yield* projectionPipeline.bootstrap;
+        const retainedSharedPath = textAttachmentRelativePath({
+          attachmentsDir,
+          path: textAttachmentPath,
+        });
+        assert.isNotNull(retainedSharedPath);
+        reconcileTextAttachments({
+          attachmentsDir,
+          retainedRelativePaths: new Set(retainedSharedPath ? [retainedSharedPath] : []),
+          nowMs: Number.MAX_SAFE_INTEGER,
+        });
+
+        assert.isTrue(yield* exists(textAttachmentPath));
+        assert.isTrue(yield* exists(deletedTextAttachmentPath));
+        assert.isFalse(yield* exists(deletedImageAttachmentPath));
       }),
     );
   },
@@ -1139,9 +1602,18 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         const now = "2026-01-01T00:00:00.000Z";
         const { attachmentsDir: attachmentsRootDir, stateDir } = yield* ServerConfig;
         const attachmentsSentinelPath = path.join(attachmentsRootDir, "sentinel.txt");
+        const unknownAttachmentPath = path.join(
+          attachmentsRootDir,
+          "unknown-00000000-0000-4000-8000-000000000009.txt",
+        );
+        const unknownTextDirectoryPath = path.join(attachmentsRootDir, "text", "manual");
+        const unknownTextPath = path.join(unknownTextDirectoryPath, "notes.txt");
         const stateDirSentinelPath = path.join(stateDir, "state-sentinel.txt");
         yield* fileSystem.makeDirectory(attachmentsRootDir, { recursive: true });
+        yield* fileSystem.makeDirectory(unknownTextDirectoryPath, { recursive: true });
         yield* fileSystem.writeFileString(attachmentsSentinelPath, "keep-attachments-root");
+        yield* fileSystem.writeFileString(unknownAttachmentPath, "keep-unknown-attachment");
+        yield* fileSystem.writeFileString(unknownTextPath, "keep-unknown-text");
         yield* fileSystem.writeFileString(stateDirSentinelPath, "keep-state-dir");
 
         yield* eventStore.append({
@@ -1164,6 +1636,8 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
 
         assert.isTrue(yield* exists(attachmentsRootDir));
         assert.isTrue(yield* exists(attachmentsSentinelPath));
+        assert.isTrue(yield* exists(unknownAttachmentPath));
+        assert.isTrue(yield* exists(unknownTextPath));
         assert.isTrue(yield* exists(stateDirSentinelPath));
       }),
     );
