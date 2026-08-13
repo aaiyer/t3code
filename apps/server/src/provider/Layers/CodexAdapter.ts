@@ -330,6 +330,20 @@ function itemDetail(itemType: CanonicalItemType, item: CodexLifecycleItem): stri
   return undefined;
 }
 
+function commandExecutionMetadata(item: CodexLifecycleItem) {
+  if (item.type !== "commandExecution") return undefined;
+  const command = item.command.trim();
+  if (command.length === 0) return undefined;
+  const cwd = item.cwd.trim();
+  const processId = item.processId?.trim();
+  return {
+    command,
+    ...(cwd.length > 0 ? { cwd } : {}),
+    ...(processId ? { processId } : {}),
+    ...(item.source ? { source: item.source } : {}),
+  };
+}
+
 function toRequestTypeFromMethod(method: string): CanonicalRequestType {
   switch (method) {
     case "item/commandExecution/requestApproval":
@@ -518,6 +532,7 @@ function mapItemLifecycle(
       : lifecycle === "item.completed"
         ? "completed"
         : undefined;
+  const commandExecution = commandExecutionMetadata(item);
 
   return {
     ...runtimeEventBase(event, canonicalThreadId),
@@ -527,6 +542,7 @@ function mapItemLifecycle(
       ...(status ? { status } : {}),
       ...(itemTitle(itemType, item) ? { title: itemTitle(itemType, item) } : {}),
       ...(detail ? { detail } : {}),
+      ...(commandExecution ? { commandExecution } : {}),
       ...(event.payload !== undefined ? { data: event.payload } : {}),
     },
   };

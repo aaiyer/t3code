@@ -252,6 +252,16 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("keeps processes as a singleton surface", () => {
+    useRightPanelStore.getState().open(refA, "processes");
+    useRightPanelStore.getState().open(refA, "processes");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "processes",
+      surfaces: [{ id: "processes", kind: "processes" }],
+    });
+  });
+
   it("replaces the standalone explorer with peer file surfaces", () => {
     useRightPanelStore.getState().open(refA, "files");
     useRightPanelStore.getState().openFile(refA, "src/index.ts");

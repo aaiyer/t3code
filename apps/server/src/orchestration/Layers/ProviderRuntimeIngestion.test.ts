@@ -1154,6 +1154,7 @@ describe("ProviderRuntimeIngestion", () => {
         : undefined;
 
     expect(activity?.summary).toBe("Ran command");
+    expect(payload?.itemId).toBe("item-command-completed");
     expect(payload?.detail).toBe("bun run lint");
   });
 

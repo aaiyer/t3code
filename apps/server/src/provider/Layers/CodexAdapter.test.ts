@@ -938,6 +938,49 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("normalizes running command process metadata", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-command-started"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/started",
+        turnId: asTurnId("turn-1"),
+        itemId: ProviderItemId.make("command-1"),
+        payload: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          startedAtMs: 1_767_225_600_000,
+          item: {
+            id: "command-1",
+            type: "commandExecution",
+            command: "vp run dev",
+            commandActions: [],
+            cwd: "/workspace",
+            processId: "4242",
+            source: "agent",
+            status: "inProgress",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "item.started") return;
+      NodeAssert.deepStrictEqual(firstEvent.value.payload.commandExecution, {
+        command: "vp run dev",
+        cwd: "/workspace",
+        processId: "4242",
+        source: "agent",
+      });
+    }),
+  );
+
   it.effect("maps fatal websocket stderr notifications to runtime.error", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
