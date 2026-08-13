@@ -417,14 +417,30 @@ function extractCommandResult(
   const item = asRecord(data?.item);
   const itemResult = asRecord(item?.result);
   const rawOutput = asRecord(data?.rawOutput);
-  const rawOutputStdout = options.preserveBlankRawOutputStreams
-    ? firstRawStringFromRecord(rawOutput, ["stdout"])
-    : firstCommandOutputStringFromRecord(rawOutput, ["stdout"]);
-  const stdout =
-    rawOutputStdout ??
-    firstCommandOutputStringFromRecord(itemResult, ["stdout"]) ??
-    firstCommandOutputStringFromRecord(data, ["stdout"]) ??
-    firstCommandOutputStringFromRecord(payload, ["stdout"]);
+  const rawOutputHasFileSummary = asNumber(rawOutput?.totalFiles) !== null;
+  const rawOutputContentValue = rawOutputHasFileSummary
+    ? null
+    : options.preserveBlankRawOutputStreams
+      ? firstRawStringFromRecord(rawOutput, ["content", "output", "text", "result"])
+      : firstCommandOutputStringFromRecord(rawOutput, ["content", "output", "text", "result"]);
+  const rawOutputStdoutValue = rawOutputHasFileSummary
+    ? null
+    : options.preserveBlankRawOutputStreams
+      ? firstRawStringFromRecord(rawOutput, ["stdout"])
+      : firstCommandOutputStringFromRecord(rawOutput, ["stdout"]);
+  const projectedRawOutput = options.preserveBlankRawOutputStreams
+    ? null
+    : rawOutputContentValue
+      ? summarizeToolTextOutput(rawOutputContentValue)
+      : rawOutputStdoutValue && extractWorkLogItemType(payload) !== "command_execution"
+        ? summarizeToolTextOutput(rawOutputStdoutValue)
+        : null;
+  const stdout = projectedRawOutput
+    ? null
+    : (rawOutputStdoutValue ??
+      firstCommandOutputStringFromRecord(itemResult, ["stdout"]) ??
+      firstCommandOutputStringFromRecord(data, ["stdout"]) ??
+      firstCommandOutputStringFromRecord(payload, ["stdout"]));
   const stderr =
     (options.preserveBlankRawOutputStreams
       ? firstRawStringFromRecord(rawOutput, ["stderr"])
@@ -432,12 +448,11 @@ function extractCommandResult(
     firstCommandOutputStringFromRecord(itemResult, ["stderr"]) ??
     firstCommandOutputStringFromRecord(data, ["stderr"]) ??
     firstCommandOutputStringFromRecord(payload, ["stderr"]);
-  const rawOutputContent = options.preserveBlankRawOutputStreams
-    ? firstRawStringFromRecord(rawOutput, ["content", "output", "text", "result"])
-    : firstCommandOutputStringFromRecord(rawOutput, ["content", "output", "text", "result"]);
   const content =
+    (options.preserveBlankRawOutputStreams
+      ? (stdout ?? rawOutputContentValue)
+      : projectedRawOutput) ??
     stdout ??
-    rawOutputContent ??
     firstCommandOutputStringFromRecord(itemResult, ["content", "output", "text", "result"]) ??
     firstCommandOutputStringFromRecord(item, ["aggregatedOutput", "output", "text", "result"]);
   const strippedContent = content ? stripTrailingExitCode(content) : null;

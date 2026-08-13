@@ -76,6 +76,26 @@ describe("parseWorkLogActivityPayload", () => {
       output: "aggregated output",
     });
   });
+
+  it("matches the wire projection by preferring completed raw content over raw stdout", () => {
+    const parsed = parseWorkLogActivityPayload(
+      {
+        itemType: "command_execution",
+        data: {
+          rawOutput: {
+            content: "first useful line\nsecond line",
+            stdout: "unused stdout",
+          },
+        },
+      },
+      { heading: "Ran command" },
+    );
+
+    expect(parsed).toMatchObject({
+      output: "first useful line",
+      stdout: null,
+    });
+  });
 });
 
 describe("cumulative activity snapshots", () => {
