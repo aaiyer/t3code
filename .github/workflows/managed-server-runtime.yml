@@ -61,7 +61,7 @@ jobs:
           test "$(uname -m)" = aarch64
 
           deploy_root="$RUNNER_TEMP/t3-deploy"
-          archive_name=t3code-server-0.0.32-aaiyer.2-linux-arm64-al2023
+          archive_name=t3code-server-0.0.32-aaiyer.3-linux-arm64-al2023
           archive_root="$RUNNER_TEMP/$archive_name"
           output_root="$RUNNER_TEMP/runtime-output"
 
@@ -123,12 +123,12 @@ jobs:
       - name: Attest the runtime archive
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
-          subject-path: ${{ runner.temp }}/runtime-output/t3code-server-0.0.32-aaiyer.2-linux-arm64-al2023.tar.gz
+          subject-path: ${{ runner.temp }}/runtime-output/t3code-server-0.0.32-aaiyer.3-linux-arm64-al2023.tar.gz
 
       - name: Upload the runtime archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: t3code-server-0.0.32-aaiyer.2-linux-arm64-al2023
+          name: t3code-server-0.0.32-aaiyer.3-linux-arm64-al2023
           path: ${{ runner.temp }}/runtime-output/*
           if-no-files-found: error
           retention-days: 7
