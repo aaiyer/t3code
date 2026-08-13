@@ -784,6 +784,10 @@ function mapCollabAgentEvent(
         (typeof item?.query === "string" ? item.query : undefined);
       const canonical = toCanonicalItemType(itemTypeRaw);
       const summary = looseSummary ?? canonical.replaceAll("_", " ");
+      const messageReceived =
+        payload.itemPhase === "completed" &&
+        itemTypeRaw === "agentMessage" &&
+        typeof item?.text === "string";
       return [
         {
           ...base,
@@ -793,6 +797,7 @@ function mapCollabAgentEvent(
             description: title,
             ...(knownName ? { title: knownName } : {}),
             summary,
+            ...(messageReceived ? { messageReceived: true } : {}),
             timelineBypass: true,
           },
         },

@@ -25,8 +25,10 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { useClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
+import { formatShortTimestamp } from "~/timestampFormat";
 import { ScrollArea } from "~/components/ui/scroll-area";
 
 /**
@@ -138,6 +140,7 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
 
 /** Flat, non-interactive agent status line. No unfold. */
 function AgentRow({ agent }: { agent: RuntimeSubagent }) {
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
@@ -149,6 +152,9 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
     modelLabel,
     agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
+    agent.lastMessageAt
+      ? `last msg ${formatShortTimestamp(agent.lastMessageAt, timestampFormat)}`
+      : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
 

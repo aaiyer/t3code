@@ -170,6 +170,29 @@ describe("foldSubagentActivities", () => {
     expect(agents[0]!.status).toBe("running");
   });
 
+  it("retains the timestamp of the latest received agent message", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "message-agent", taskType: "local_agent" }),
+      activity(
+        "task.progress",
+        { taskId: "message-agent", summary: "first", messageReceived: true },
+        "2026-08-01T11:00:00.000Z",
+      ),
+      activity(
+        "task.progress",
+        { taskId: "message-agent", summary: "tool activity" },
+        "2026-08-01T11:01:00.000Z",
+      ),
+      activity(
+        "task.progress",
+        { taskId: "message-agent", summary: "second", messageReceived: true },
+        "2026-08-01T11:02:00.000Z",
+      ),
+    ]);
+
+    expect(agents[0]!.lastMessageAt).toBe("2026-08-01T11:02:00.000Z");
+  });
+
   it("cumulative usage max-merges: duplicate and late frames never shrink or double-count", () => {
     const agents = fold([
       activity("task.started", { taskId: "task-5", taskType: "local_agent" }),
