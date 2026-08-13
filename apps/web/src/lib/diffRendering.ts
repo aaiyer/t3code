@@ -163,6 +163,35 @@ export function resolveFileDiffPreviousPath(fileDiff: FileDiffMetadata): string 
   return raw;
 }
 
+export function changedFileMatchesDiffPath(changedFile: string, diffPath: string): boolean {
+  return createChangedFileDiffPathMatcher(diffPath)(changedFile);
+}
+
+export function createChangedFileDiffPathMatcher(
+  diffPath: string,
+): (changedFile: string) => boolean {
+  const normalizedDiffPath = normalizeDiffComparisonPath(diffPath);
+  return (changedFile) => changedFileMatchesNormalizedDiffPath(changedFile, normalizedDiffPath);
+}
+
+function changedFileMatchesNormalizedDiffPath(
+  changedFile: string,
+  normalizedDiffPath: string,
+): boolean {
+  const normalizedChangedFile = normalizeDiffComparisonPath(changedFile);
+  const normalizedChangedFileSuffix = normalizedChangedFile.replace(/^\/+/u, "");
+  const changedFileHasPathSeparator = normalizedChangedFileSuffix.includes("/");
+  return (
+    normalizedChangedFile === normalizedDiffPath ||
+    normalizedChangedFile.endsWith(`/${normalizedDiffPath}`) ||
+    (changedFileHasPathSeparator && normalizedDiffPath.endsWith(`/${normalizedChangedFileSuffix}`))
+  );
+}
+
+function normalizeDiffComparisonPath(value: string): string {
+  return value.replace(/\\/gu, "/");
+}
+
 export function buildFileDiffRenderKey(fileDiff: FileDiffMetadata): string {
   const cacheKey = fileDiff.cacheKey;
   if (!cacheKey) return `${fileDiff.prevName ?? "none"}:${fileDiff.name}`;
