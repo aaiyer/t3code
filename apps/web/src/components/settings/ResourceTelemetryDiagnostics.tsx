@@ -74,6 +74,13 @@ function formatBytes(value: number): string {
   return `${next.toFixed(next >= 100 ? 0 : next >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
+function formatUptime(milliseconds: number): string {
+  const totalHours = Math.floor(milliseconds / 3_600_000);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return days > 0 ? `${days}d ${hours}h` : `${hours}h`;
+}
+
 function formatRate(value: number): string {
   return `${formatBytes(value)}/s`;
 }
@@ -468,6 +475,57 @@ function ResourceHistoryChart({
   );
 }
 
+function HostHistoryChart({ buckets }: { buckets: ReadonlyArray<ResourceTelemetryHistoryBucket> }) {
+  if (!buckets.some((bucket) => bucket.hostAvgCpuPercent !== undefined)) return null;
+
+  return (
+    <div className="px-4 pt-4 sm:px-5">
+      <div className="mb-3 flex items-center gap-4 text-[10px] text-muted-foreground/65">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-1.5 w-3 rounded-full bg-violet-500/75" /> Host CPU
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-1.5 w-3 rounded-full bg-emerald-500/75" /> Host memory
+        </span>
+      </div>
+      <div className="flex h-24 items-end gap-1 overflow-hidden rounded-lg border border-border/40 bg-muted/8 px-2 pt-3 pb-2">
+        {buckets.map((bucket) => {
+          const memoryPercent =
+            bucket.hostMaxUsedMemoryBytes === undefined ||
+            bucket.hostTotalMemoryBytes === undefined ||
+            bucket.hostTotalMemoryBytes === 0
+              ? 0
+              : (bucket.hostMaxUsedMemoryBytes / bucket.hostTotalMemoryBytes) * 100;
+          const cpuPercent = bucket.hostAvgCpuPercent ?? 0;
+          return (
+            <Tooltip key={DateTime.formatIso(bucket.startedAt)}>
+              <TooltipTrigger
+                render={
+                  <div className="grid h-full min-w-1 flex-1 grid-cols-2 items-end gap-px">
+                    <span
+                      className="block rounded-t-sm bg-violet-500/75"
+                      style={{ height: `${Math.max(1, Math.min(100, cpuPercent))}%` }}
+                    />
+                    <span
+                      className="block rounded-t-sm bg-emerald-500/75"
+                      style={{ height: `${Math.max(1, Math.min(100, memoryPercent))}%` }}
+                    />
+                  </div>
+                }
+              />
+              <TooltipPopup side="top" className="space-y-0.5 text-left">
+                <div>Host CPU avg {cpuPercent.toFixed(1)}%</div>
+                <div>Host CPU peak {(bucket.hostMaxCpuPercent ?? 0).toFixed(1)}%</div>
+                <div>Host memory {memoryPercent.toFixed(1)}%</div>
+              </TooltipPopup>
+            </Tooltip>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ProcessTreeName({
   process,
   collapsed,
@@ -853,6 +911,13 @@ export function ResourceTelemetryDiagnostics() {
   const [isRetrying, setIsRetrying] = useState(false);
   const snapshot = telemetry.data;
   const allT3 = snapshot?.groups.allT3;
+  const host = snapshot?.host;
+  const hostCpu = host ? Option.getOrNull(host.cpuPercent) : null;
+  const hostUsedMemory = host ? Option.getOrNull(host.usedMemoryBytes) : null;
+  const hostTotalMemory = host ? Option.getOrNull(host.totalMemoryBytes) : null;
+  const hostUptime = host ? Option.getOrNull(host.uptimeMs) : null;
+  const hostLoadOne = host ? Option.getOrNull(host.loadAverageOne) : null;
+  const hostLogicalCpus = host ? Option.getOrNull(host.logicalCpuCount) : null;
 
   const signalProcess = useCallback(
     async (process: ResourceTelemetryProcess, signal: ServerProcessSignal) => {
@@ -994,6 +1059,55 @@ export function ResourceTelemetryDiagnostics() {
         }
       >
         <div className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-[0_1px_1px_rgb(0_0_0/0.03),0_8px_30px_rgb(0_0_0/0.035)]">
+          <div className="border-b border-border/60 bg-muted/20 px-4 py-4 sm:px-5">
+            <div className="mb-3">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
+                Environment host
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Overall utilization and capacity of the machine running this T3 environment.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <IconStat
+                icon={<CpuIcon className="size-3.5" />}
+                label="Host CPU"
+                value={hostCpu === null ? "Unavailable" : `${hostCpu.toFixed(1)}%`}
+                detail={
+                  hostLogicalCpus === null
+                    ? undefined
+                    : `${hostLogicalCpus} logical ${hostLogicalCpus === 1 ? "CPU" : "CPUs"}`
+                }
+              />
+              <IconStat
+                icon={<MemoryStickIcon className="size-3.5" />}
+                label="Host memory"
+                value={
+                  hostUsedMemory === null || hostTotalMemory === null
+                    ? "Unavailable"
+                    : hostTotalMemory === 0
+                      ? "0%"
+                      : `${((hostUsedMemory / hostTotalMemory) * 100).toFixed(1)}%`
+                }
+                detail={
+                  hostUsedMemory === null || hostTotalMemory === null
+                    ? undefined
+                    : `${formatBytes(hostUsedMemory)} / ${formatBytes(hostTotalMemory)}`
+                }
+              />
+              <IconStat
+                icon={<GaugeIcon className="size-3.5" />}
+                label="Load average"
+                value={hostLoadOne === null ? "Unavailable" : hostLoadOne.toFixed(2)}
+                detail="1 minute"
+              />
+              <IconStat
+                icon={<ActivityIcon className="size-3.5" />}
+                label="Host uptime"
+                value={hostUptime === null ? "Unavailable" : formatUptime(hostUptime)}
+              />
+            </div>
+          </div>
           <div className="flex flex-col gap-3 border-b border-border/60 bg-linear-to-r from-muted/45 via-muted/20 to-transparent px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
@@ -1246,6 +1360,7 @@ export function ResourceTelemetryDiagnostics() {
               <span>{history.error}</span>
             </div>
           ) : null}
+          <HostHistoryChart buckets={history.data?.buckets ?? []} />
           <ResourceHistoryChart buckets={history.data?.buckets ?? []} />
           <HistoryProcessTable processes={history.data?.topProcesses ?? []} />
         </div>

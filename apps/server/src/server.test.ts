@@ -4600,6 +4600,23 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("routes compact system vitals without exposing the process tree", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const snapshot = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.subscribeSystemVitals]({}).pipe(Stream.runHead),
+        ),
+      );
+
+      assertTrue(Option.isSome(snapshot));
+      assert.equal(snapshot.value.t3.processCount, 0);
+      assert.equal("processes" in snapshot.value, false);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("routes websocket rpc subscribeServerConfig emits provider status updates", () =>
     Effect.gen(function* () {
       const nextProviders = [

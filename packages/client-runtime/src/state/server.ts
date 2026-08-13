@@ -702,6 +702,11 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.subscribeResourceTelemetry,
       idleTtlMs: 0,
     }),
+    systemVitals: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:system-vitals",
+      tag: WS_METHODS.subscribeSystemVitals,
+      idleTtlMs: 15_000,
+    }),
     resourceTelemetryHistory: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:resource-telemetry-history",
       tag: WS_METHODS.serverGetResourceTelemetryHistory,

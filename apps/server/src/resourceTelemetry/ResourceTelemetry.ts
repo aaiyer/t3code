@@ -6,7 +6,9 @@ import type {
   ResourceTelemetryHistoryInput,
   ResourceTelemetryProcessIdentity,
   ResourceTelemetryRetryResult,
+  ResourceTelemetryHost,
   ResourceTelemetrySnapshot,
+  SystemVitalsSnapshot,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -17,6 +19,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -63,6 +66,14 @@ export class ResourceTelemetry extends Context.Service<
       never,
       Scope.Scope
     >;
+    readonly subscribeSystemVitals: Effect.Effect<
+      {
+        readonly latest: SystemVitalsSnapshot;
+        readonly changes: Stream.Stream<SystemVitalsSnapshot>;
+      },
+      never,
+      Scope.Scope
+    >;
     readonly readHistory: (
       input: ResourceTelemetryHistoryInput,
     ) => Effect.Effect<ResourceTelemetryHistoryWithLegacyBuckets>;
@@ -89,6 +100,11 @@ interface LiveTelemetryState {
   readonly scope: Option.Option<Scope.Closeable>;
 }
 
+interface VitalsTelemetryState {
+  readonly retainCount: number;
+  readonly scope: Option.Option<Scope.Closeable>;
+}
+
 function unknownPower(updatedAt: DateTime.Utc): HostPowerSnapshot {
   return {
     source: "unknown",
@@ -101,6 +117,50 @@ function unknownPower(updatedAt: DateTime.Utc): HostPowerSnapshot {
     thermalState: "unknown",
     stale: true,
     updatedAt,
+  };
+}
+
+function unavailableHost(): ResourceTelemetryHost {
+  return {
+    cpuPercent: Option.none(),
+    logicalCpuCount: Option.none(),
+    totalMemoryBytes: Option.none(),
+    usedMemoryBytes: Option.none(),
+    availableMemoryBytes: Option.none(),
+    uptimeMs: Option.none(),
+    loadAverageOne: Option.none(),
+    loadAverageFive: Option.none(),
+    loadAverageFifteen: Option.none(),
+  };
+}
+
+function projectHost(snapshot: Option.Option<ResourceMonitorSnapshotEvent>): ResourceTelemetryHost {
+  return Option.match(snapshot, {
+    onNone: unavailableHost,
+    onSome: (native) =>
+      native.host === undefined
+        ? unavailableHost()
+        : {
+            cpuPercent: Option.some(native.host.cpuPercent),
+            logicalCpuCount: Option.some(native.host.logicalCpuCount),
+            totalMemoryBytes: Option.some(native.host.totalMemoryBytes),
+            usedMemoryBytes: Option.some(native.host.usedMemoryBytes),
+            availableMemoryBytes: Option.some(native.host.availableMemoryBytes),
+            uptimeMs: Option.some(native.host.uptimeMs),
+            loadAverageOne: Option.some(native.host.loadAverageOne),
+            loadAverageFive: Option.some(native.host.loadAverageFive),
+            loadAverageFifteen: Option.some(native.host.loadAverageFifteen),
+          },
+  });
+}
+
+function projectSystemVitals(snapshot: ResourceTelemetrySnapshot): SystemVitalsSnapshot {
+  return {
+    readAt: snapshot.readAt,
+    sampleIntervalMs: snapshot.sampleIntervalMs,
+    host: snapshot.host ?? unavailableHost(),
+    t3: snapshot.groups.allT3,
+    health: snapshot.health.native,
   };
 }
 
@@ -185,6 +245,7 @@ export const make = Effect.fn("resourceTelemetry.resourceTelemetry.make")(functi
     sampleIntervalMs: initialNativeHealth.sampleIntervalMs,
     processes: initialMerge.processes,
     groups: initialMerge.groups,
+    host: unavailableHost(),
     power: Option.match(initialDesktop, {
       onNone: () => unknownPower(initialReadAt),
       onSome: (desktop) => desktop.power,
@@ -211,6 +272,11 @@ export const make = Effect.fn("resourceTelemetry.resourceTelemetry.make")(functi
     scope: Option.none(),
   });
   const liveMutex = yield* Semaphore.make(1);
+  const vitalsState = yield* Ref.make<VitalsTelemetryState>({
+    retainCount: 0,
+    scope: Option.none(),
+  });
+  const vitalsMutex = yield* Semaphore.make(1);
   const refreshHealth = mutex.withPermits(1)(
     Effect.gen(function* () {
       const current = yield* Ref.get(state);
@@ -298,6 +364,7 @@ export const make = Effect.fn("resourceTelemetry.resourceTelemetry.make")(functi
           sampleIntervalMs: nativeHealth.sampleIntervalMs,
           processes: merged.processes,
           groups: merged.groups,
+          host: projectHost(nativeSnapshot),
           power: Option.match(desktopSnapshot, {
             onNone: () => unknownPower(readAt),
             onSome: (desktop) => desktop.power,
@@ -411,6 +478,51 @@ export const make = Effect.fn("resourceTelemetry.resourceTelemetry.make")(functi
   );
   const liveChanges = Stream.unwrap(Effect.map(subscribe, ({ changes }) => changes));
 
+  const vitalsChanges = yield* PubSub.sliding<SystemVitalsSnapshot>(4);
+  const sampleSystemVitals = nativeClient.sampleNow.pipe(
+    Effect.flatMap(ingestNative),
+    Effect.flatMap((snapshot) => PubSub.publish(vitalsChanges, projectSystemVitals(snapshot))),
+    Effect.ignore,
+  );
+  const acquireVitals = vitalsMutex.withPermits(1)(
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(vitalsState);
+        if (current.retainCount > 0) {
+          yield* Ref.set(vitalsState, { ...current, retainCount: current.retainCount + 1 });
+          return;
+        }
+        const scope = yield* Scope.make();
+        yield* sampleSystemVitals.pipe(
+          Effect.repeat(Schedule.spaced("10 seconds")),
+          Effect.forkIn(scope),
+        );
+        yield* Ref.set(vitalsState, { retainCount: 1, scope: Option.some(scope) });
+      }),
+    ),
+  );
+  const releaseVitals = vitalsMutex.withPermits(1)(
+    Effect.gen(function* () {
+      const current = yield* Ref.get(vitalsState);
+      if (current.retainCount <= 1) {
+        yield* Ref.set(vitalsState, { retainCount: 0, scope: Option.none() });
+        if (Option.isSome(current.scope)) {
+          yield* Scope.close(current.scope.value, Exit.void).pipe(Effect.ignore);
+        }
+        return;
+      }
+      yield* Ref.set(vitalsState, { ...current, retainCount: current.retainCount - 1 });
+    }),
+  );
+  const subscribeSystemVitals = subscribeBeforeSnapshot(
+    vitalsChanges,
+    Effect.acquireRelease(acquireVitals, () => releaseVitals).pipe(
+      Effect.andThen(latest),
+      Effect.map(projectSystemVitals),
+    ),
+    mutex,
+  );
+
   const readHistory: ResourceTelemetry["Service"]["readHistory"] = (input) =>
     Effect.gen(function* () {
       const readAt = yield* DateTime.now;
@@ -486,6 +598,7 @@ export const make = Effect.fn("resourceTelemetry.resourceTelemetry.make")(functi
     latest,
     changes: liveChanges,
     subscribe,
+    subscribeSystemVitals,
     readHistory,
     refresh,
     validateProcessIdentity,

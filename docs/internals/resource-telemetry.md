@@ -96,6 +96,8 @@ The protocol version is defined by
 The monitor keeps one `sysinfo::System` instance and refreshes it at the
 power-adaptive interval selected by the server. It collects:
 
+- overall host CPU utilization, logical CPU count, memory capacity and usage, load average, and
+  uptime;
 - PID and parent PID;
 - process start time and run time;
 - process name and command line;
@@ -316,6 +318,7 @@ background-policy broadcast every second.
 
 The WebSocket RPC surface provides:
 
+- a compact, low-rate host and T3 vitals subscription for persistent environment chrome;
 - current snapshot;
 - bounded history;
 - explicit monitor retry;
@@ -323,6 +326,7 @@ The WebSocket RPC surface provides:
 
 The diagnostics page displays:
 
+- overall host CPU, memory capacity and usage, load average, uptime, and bounded history;
 - aggregate CPU, memory, I/O, and process counts;
 - backend, Electron, and monitor overhead groups;
 - power and thermal state;

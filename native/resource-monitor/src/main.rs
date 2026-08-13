@@ -105,6 +105,8 @@ struct Capabilities {
     io_bytes: bool,
     process_start_time: bool,
     process_tree: bool,
+    host_cpu: bool,
+    host_memory: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +148,20 @@ struct ProcessSample {
     io_semantics: IoSemantics,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSample {
+    cpu_percent: f32,
+    logical_cpu_count: usize,
+    total_memory_bytes: u64,
+    used_memory_bytes: u64,
+    available_memory_bytes: u64,
+    uptime_ms: u64,
+    load_average_one: f64,
+    load_average_five: f64,
+    load_average_fifteen: f64,
+}
+
 impl ProcessSample {
     fn estimated_history_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
@@ -170,6 +186,7 @@ struct SnapshotEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
     external_processes: Vec<ExternalProcess>,
+    host: HostSample,
     processes: Vec<ProcessSample>,
 }
 
@@ -334,6 +351,7 @@ impl Collector {
     }
 
     fn prime_cpu_usage(&mut self) {
+        self.system.refresh_cpu_usage();
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
@@ -354,7 +372,24 @@ impl Collector {
             true,
             process_refresh_kind(),
         );
+        self.system.refresh_cpu_usage();
+        self.system.refresh_memory();
         self.cpu_baseline_refreshed_at = Some(Instant::now());
+
+        let load_average = System::load_average();
+        let total_memory_bytes = self.system.total_memory();
+        let available_memory_bytes = self.system.available_memory();
+        let host = HostSample {
+            cpu_percent: self.system.global_cpu_usage(),
+            logical_cpu_count: self.system.cpus().len(),
+            total_memory_bytes,
+            used_memory_bytes: total_memory_bytes.saturating_sub(available_memory_bytes),
+            available_memory_bytes,
+            uptime_ms: System::uptime().saturating_mul(1_000),
+            load_average_one: load_average.one,
+            load_average_five: load_average.five,
+            load_average_fifteen: load_average.fifteen,
+        };
 
         let rows = self
             .system
@@ -445,6 +480,7 @@ impl Collector {
             ),
             request_id,
             external_processes,
+            host,
             processes,
         }
     }
@@ -681,6 +717,8 @@ fn main() -> io::Result<()> {
                 io_bytes: true,
                 process_start_time: true,
                 process_tree: true,
+                host_cpu: true,
+                host_memory: true,
             },
         },
     )?;
@@ -836,6 +874,20 @@ fn main() -> io::Result<()> {
 mod tests {
     use super::*;
 
+    fn host_sample() -> HostSample {
+        HostSample {
+            cpu_percent: 0.0,
+            logical_cpu_count: 1,
+            total_memory_bytes: 0,
+            used_memory_bytes: 0,
+            available_memory_bytes: 0,
+            uptime_ms: 0,
+            load_average_one: 0.0,
+            load_average_five: 0.0,
+            load_average_fifteen: 0.0,
+        }
+    }
+
     #[test]
     fn selects_roots_and_all_descendants() {
         let rows = vec![
@@ -965,6 +1017,7 @@ mod tests {
                     pid: 7,
                     start_time_ms: Some(1_000),
                 }],
+                host: host_sample(),
                 processes: Vec::new(),
             });
         }
@@ -1003,6 +1056,7 @@ mod tests {
             inaccessible_process_count: 0,
             request_id: None,
             external_processes: Vec::new(),
+            host: host_sample(),
             processes: Vec::new(),
         };
         history.record(&snapshot);
@@ -1056,6 +1110,7 @@ mod tests {
                     inaccessible_process_count: 0,
                     request_id: None,
                     external_processes: Vec::new(),
+                    host: host_sample(),
                     processes: vec![ProcessSample {
                         pid: sequence as u32 + 1,
                         start_time_ms: sequence * 1_000,
@@ -1096,6 +1151,7 @@ mod tests {
             inaccessible_process_count: 0,
             request_id: None,
             external_processes,
+            host: host_sample(),
             processes: Vec::new(),
         };
         let snapshot_bytes = snapshot.estimated_history_bytes();
