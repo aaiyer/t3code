@@ -18,7 +18,20 @@ import {
   FilesystemBrowseResult,
   FilesystemBrowseError,
 } from "./filesystem.ts";
-import { AssetAccessError, AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
+import {
+  AssetAccessError,
+  AssetCreateUrlInput,
+  AssetCreateUrlResult,
+  AssetClaimTextAttachmentInput,
+  AssetClaimTextAttachmentResult,
+  AssetReleaseTextAttachmentInput,
+  AssetReleaseTextAttachmentResult,
+  AssetTextAttachmentClaimError,
+  AssetTextAttachmentReleaseError,
+  AssetTextAttachmentWriteError,
+  AssetWriteTextAttachmentInput,
+  AssetWriteTextAttachmentResult,
+} from "./assets.ts";
 import {
   GitActionProgressEvent,
   VcsSwitchRefInput,
@@ -207,6 +220,9 @@ export const WS_METHODS = {
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
   assetsCreateUrl: "assets.createUrl",
+  assetsWriteTextAttachment: "assets.writeTextAttachment",
+  assetsClaimTextAttachment: "assets.claimTextAttachment",
+  assetsReleaseTextAttachment: "assets.releaseTextAttachment",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -655,6 +671,24 @@ export const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
   error: Schema.Union([AssetAccessError, EnvironmentAuthorizationError]),
 });
 
+export const WsAssetsWriteTextAttachmentRpc = Rpc.make(WS_METHODS.assetsWriteTextAttachment, {
+  payload: AssetWriteTextAttachmentInput,
+  success: AssetWriteTextAttachmentResult,
+  error: Schema.Union([AssetTextAttachmentWriteError, EnvironmentAuthorizationError]),
+});
+
+export const WsAssetsClaimTextAttachmentRpc = Rpc.make(WS_METHODS.assetsClaimTextAttachment, {
+  payload: AssetClaimTextAttachmentInput,
+  success: AssetClaimTextAttachmentResult,
+  error: Schema.Union([AssetTextAttachmentClaimError, EnvironmentAuthorizationError]),
+});
+
+export const WsAssetsReleaseTextAttachmentRpc = Rpc.make(WS_METHODS.assetsReleaseTextAttachment, {
+  payload: AssetReleaseTextAttachmentInput,
+  success: AssetReleaseTextAttachmentResult,
+  error: Schema.Union([AssetTextAttachmentReleaseError, EnvironmentAuthorizationError]),
+});
+
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   payload: VcsStatusInput,
   success: VcsStatusStreamEvent,
@@ -1021,6 +1055,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsAssetsCreateUrlRpc,
+  WsAssetsWriteTextAttachmentRpc,
+  WsAssetsClaimTextAttachmentRpc,
+  WsAssetsReleaseTextAttachmentRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,

@@ -31,6 +31,7 @@ import {
   scheduleEnvironmentReconnectWarning,
   startNewThreadForProject,
   shouldShowBranchMismatchBanner,
+  shouldReleaseTextAttachmentClaims,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
 
@@ -72,6 +73,20 @@ describe("environment reconnect warning grace", () => {
     expect(hasEnvironmentReconnectWarningGraceElapsed(anotherEnvironmentId, environmentId)).toBe(
       false,
     );
+  });
+});
+
+describe("text attachment claim send ordering", () => {
+  it("retains claims throughout slow worktree preparation", () => {
+    expect(shouldReleaseTextAttachmentClaims(false)).toBe(false);
+  });
+
+  it("retains claims after metadata or other pre-send failures", () => {
+    expect(shouldReleaseTextAttachmentClaims(false)).toBe(false);
+  });
+
+  it("releases claims only after turn start succeeds", () => {
+    expect(shouldReleaseTextAttachmentClaims(true)).toBe(true);
   });
 });
 

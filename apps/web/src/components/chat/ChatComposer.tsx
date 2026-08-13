@@ -50,6 +50,7 @@ import {
   type ComposerImageAttachment,
   type DraftId,
   type PersistedComposerImageAttachment,
+  flushComposerDraftPersistence,
   hydrateImagesFromPersisted,
   useComposerDraftStore,
   useComposerThreadDraft,
@@ -104,6 +105,13 @@ import {
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../pierre-icons";
+import {
+  textAttachmentClaimChanges,
+  textAttachmentDraftOwnerId,
+  getTextAttachmentClaimReconciler as getRegisteredTextAttachmentClaimReconciler,
+  releaseTextAttachmentClaimsInBackground,
+  runTextAttachmentUpload,
+} from "../../textAttachmentClaims";
 import { cn, randomUUID } from "~/lib/utils";
 import { Separator } from "../ui/separator";
 
@@ -224,6 +232,18 @@ import {
 } from "../../lib/contextWindow";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
+import { assetEnvironment } from "~/state/assets";
+import { useAtomCommand } from "~/state/use-atom-command";
+import { resolvePathLinkTarget } from "~/terminal-links";
+
+const TEXT_ATTACHMENT_MAX_BYTES = 1024 * 1024;
+
+function composerAttachmentTargetKey(target: ScopedThreadRef | DraftId): string {
+  return typeof target === "string"
+    ? `draft:${target}`
+    : `thread:${target.environmentId}:${target.threadId}`;
+}
+
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 
@@ -469,6 +489,12 @@ export interface ChatComposerHandle {
   }) => void;
   /** Insert a terminal context from the terminal drawer. */
   addTerminalContext: (selection: TerminalContextSelection) => void;
+  /** Release draft claims before the parent destructively clears composer content. */
+  releaseTextAttachmentClaims: (releasedPrompt?: string) => void;
+  /** Keep claims alive while a send is preparing and may still fail. */
+  holdTextAttachmentClaims: () => void;
+  /** Resume prompt-driven claim synchronization after a failed send. */
+  resumeTextAttachmentClaims: () => void;
   /** Get the current prompt/effort/model state for use in send. */
   getSendContext: () => {
     prompt: string;
@@ -673,6 +699,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Store subscriptions (prompt / images / terminal contexts)
   // ------------------------------------------------------------------
   const composerDraft = useComposerThreadDraft(composerDraftTarget);
+  const writeTextAttachment = useAtomCommand(assetEnvironment.writeTextAttachment, {
+    reportFailure: false,
+  });
+  const claimTextAttachment = useAtomCommand(assetEnvironment.claimTextAttachment, {
+    reportFailure: false,
+  });
+  const releaseTextAttachment = useAtomCommand(assetEnvironment.releaseTextAttachment, {
+    reportFailure: false,
+  });
   const prompt = composerDraft.prompt;
   const composerImages = composerDraft.images;
   const composerTerminalContexts = composerDraft.terminalContexts;
@@ -957,6 +992,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const isMobileViewport = useMediaQuery("max-sm");
   const isComposerCollapsedMobile =
     isMobileViewport && !forceExpandedOnMobile && !isComposerFocused;
+  const [pendingAttachmentCounts, setPendingAttachmentCounts] = useState<Record<string, number>>(
+    {},
+  );
+  const [textAttachmentClaimsHeld, setTextAttachmentClaimsHeld] = useState(false);
+  const composerAttachmentKey = composerAttachmentTargetKey(composerDraftTarget);
+  const isAttachingFiles = (pendingAttachmentCounts[composerAttachmentKey] ?? 0) > 0;
 
   // ------------------------------------------------------------------
   // Refs
@@ -988,6 +1029,41 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
    * next draft.
    */
   const pendingImageCompressionsRef = useRef<Map<ThreadId, number>>(new Map());
+  const attachmentQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const composerAttachmentKeyRef = useRef(composerAttachmentKey);
+  composerAttachmentKeyRef.current = composerAttachmentKey;
+  const textAttachmentClaimOperations = useMemo(
+    () => ({
+      claim: async (path: string, draftOwnerId: string) => {
+        const result = await claimTextAttachment({
+          environmentId,
+          input: { path, draftOwnerId },
+        });
+        return result._tag === "Success" && result.value.claimed;
+      },
+      release: async (path: string, draftOwnerId: string) => {
+        const result = await releaseTextAttachment({
+          environmentId,
+          input: { path, draftOwnerId },
+        });
+        return result._tag === "Success";
+      },
+    }),
+    [claimTextAttachment, environmentId, releaseTextAttachment],
+  );
+  const getTextAttachmentClaimReconciler = useCallback(() => {
+    const draftOwnerId = textAttachmentDraftOwnerId(composerDraftTarget);
+    return getRegisteredTextAttachmentClaimReconciler({
+      environmentId,
+      draftOwnerId,
+      operations: textAttachmentClaimOperations,
+    });
+  }, [composerDraftTarget, environmentId, textAttachmentClaimOperations]);
+
+  useEffect(() => {
+    if (textAttachmentClaimsHeld) return;
+    getTextAttachmentClaimReconciler().setDesiredPrompt(prompt);
+  }, [getTextAttachmentClaimReconciler, prompt, textAttachmentClaimsHeld]);
 
   // ------------------------------------------------------------------
   // Derived: composer send state
@@ -1247,6 +1323,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     phase === "running" ||
     isSendBusy ||
     isSendDisabled ||
+    isAttachingFiles ||
     isConnecting ||
     noProviderAvailable ||
     projectSelectionRequired ||
@@ -1854,6 +1931,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
         return;
       }
+      if (isAttachingFiles) {
+        event?.preventDefault();
+        return;
+      }
       onSend(event);
       if (shouldBlurMobileComposerOnSubmit()) {
         blurMobileComposerAfterSend();
@@ -1862,6 +1943,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [
       activeThreadId,
       blurMobileComposerAfterSend,
+      isAttachingFiles,
       isSendDisabled,
       noProviderAvailable,
       onSend,
@@ -2306,14 +2388,91 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   // ------------------------------------------------------------------
-  // Callbacks: images
+  // Callbacks: attachments
   // ------------------------------------------------------------------
-  const addComposerImages = async (files: File[]) => {
+  const addComposerTextAttachment = async (file: File): Promise<string | null> => {
+    if (!gitCwd) return `Could not resolve the workspace path for '${file.name}'.`;
+    if (file.size > TEXT_ATTACHMENT_MAX_BYTES) {
+      return `'${file.name}' exceeds the 1 MB text attachment limit.`;
+    }
+    const result = await file
+      .arrayBuffer()
+      .then((buffer) => {
+        const bytes = new Uint8Array(buffer);
+        if (bytes.includes(0)) return null;
+        const contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        const draftOwnerId = textAttachmentDraftOwnerId(composerDraftTarget);
+        return runTextAttachmentUpload({
+          environmentId,
+          draftOwnerId,
+          upload: () =>
+            writeTextAttachment({
+              environmentId,
+              input: { fileName: file.name || "context.txt", contents, draftOwnerId },
+            }),
+          path: (result) => (result._tag === "Success" ? result.value.path : null),
+          release: (path) =>
+            releaseTextAttachmentClaimsInBackground({
+              environmentId,
+              claims: [{ path, draftOwnerId }],
+              release: async ({ path: releasePath, draftOwnerId: ownerId }) => {
+                const released = await releaseTextAttachment({
+                  environmentId,
+                  input: { path: releasePath, draftOwnerId: ownerId },
+                });
+                return released._tag === "Success";
+              },
+            }).then(() => undefined),
+        });
+      })
+      .catch(() => null);
+    if (result === null) return `'${file.name}' is not a supported text file.`;
+    if (result._tag === "Failure") return `Could not attach '${file.name}'.`;
+
+    getTextAttachmentClaimReconciler().confirmPaths([result.value.path]);
+    const currentPrompt = getComposerDraft(composerDraftTarget)?.prompt ?? "";
+    const separator = currentPrompt.length > 0 && !/\s$/.test(currentPrompt) ? " " : "";
+    const nextPrompt = `${currentPrompt}${separator}${serializeComposerFileLink(
+      resolvePathLinkTarget(result.value.path, gitCwd),
+    )} `;
+    if (composerAttachmentKeyRef.current === composerAttachmentKey) {
+      promptRef.current = nextPrompt;
+    }
+    setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+    try {
+      flushComposerDraftPersistence();
+    } catch {
+      if (composerAttachmentKeyRef.current === composerAttachmentKey) {
+        promptRef.current = currentPrompt;
+      }
+      setComposerDraftPrompt(composerDraftTarget, currentPrompt);
+      await releaseTextAttachmentClaimsInBackground({
+        environmentId,
+        claims: [
+          {
+            path: result.value.path,
+            draftOwnerId: textAttachmentDraftOwnerId(composerDraftTarget),
+          },
+        ],
+        release: async ({ path, draftOwnerId }) => {
+          const released = await releaseTextAttachment({
+            environmentId,
+            input: { path, draftOwnerId },
+          });
+          return released._tag === "Success";
+        },
+      });
+      return `Could not save the attachment link for '${file.name}'.`;
+    }
+    return null;
+  };
+
+  const addComposerAttachments = async (files: File[]) => {
     if (!activeThreadId || files.length === 0) return;
     if (pendingUserInputs.length > 0) {
       toastManager.add({
         type: "error",
-        title: "Attach images after answering plan questions.",
+        title: "Attach files after answering plan questions.",
       });
       return;
     }
@@ -2328,35 +2487,49 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     const pendingCount = pendingImageCompressionsRef.current.get(threadId) ?? 0;
     let reservedCount = composerImagesRef.current.length + pendingCount;
     const acceptedFiles: File[] = [];
-    let error: string | null = null;
+    const errors: string[] = [];
+    let attachedCount = 0;
     for (const file of files) {
       if (!file.type.startsWith("image/")) {
-        error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
+        const error = await addComposerTextAttachment(file);
+        if (error) errors.push(error);
+        else attachedCount += 1;
         continue;
       }
       if (reservedCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`;
-        break;
+        errors.push(
+          `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`,
+        );
+        continue;
       }
       acceptedFiles.push(file);
       reservedCount += 1;
     }
-    setThreadError(threadId, error);
-    if (acceptedFiles.length === 0) return;
+    if (acceptedFiles.length === 0) {
+      if (attachedCount > 0 && errors.length > 0) {
+        toastManager.add({
+          type: "error",
+          title: "Some files could not be attached",
+          description: errors.join(" "),
+        });
+      }
+      setThreadError(threadId, attachedCount === 0 ? (errors[errors.length - 1] ?? null) : null);
+      return;
+    }
 
     pendingImageCompressionsRef.current.set(threadId, pendingCount + acceptedFiles.length);
     try {
       const nextImages: ComposerImageAttachment[] = [];
-      let compressionError: string | null = null;
       for (const file of acceptedFiles) {
         // Images over the wire cap are downscaled to fit rather than
         // refused; files already within it pass through byte-for-byte.
         const compressed = await compressImageToByteLimit(file, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES);
         if (!compressed.ok) {
-          compressionError =
+          errors.push(
             compressed.reason === "unreadable"
               ? `'${file.name}' could not be read as an image.`
-              : `'${file.name}' is too large to attach, even after compression.`;
+              : `'${file.name}' is too large to attach, even after compression.`,
+          );
           continue;
         }
         const attachmentFile = compressed.file;
@@ -2376,13 +2549,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       } else if (nextImages.length > 1) {
         addComposerImagesToDraft(nextImages);
       }
-      // Only failures are reported here. Success must not pass `null`: by
-      // now other work (a failed send, an overlapping paste) may have set a
-      // thread error this call knows nothing about, and clearing it would
-      // swallow that message.
-      if (compressionError !== null) {
-        setThreadError(threadId, compressionError);
-      }
+      attachedCount += nextImages.length;
     } finally {
       const remaining =
         (pendingImageCompressionsRef.current.get(threadId) ?? 0) - acceptedFiles.length;
@@ -2392,6 +2559,34 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         pendingImageCompressionsRef.current.delete(threadId);
       }
     }
+    if (attachedCount > 0 && errors.length > 0) {
+      toastManager.add({
+        type: "error",
+        title: "Some files could not be attached",
+        description: errors.join(" "),
+      });
+    }
+    setThreadError(threadId, attachedCount === 0 ? (errors[errors.length - 1] ?? null) : null);
+  };
+
+  const enqueueComposerAttachments = (files: File[]) => {
+    const targetKey = composerAttachmentTargetKey(composerDraftTarget);
+    setPendingAttachmentCounts((current) => ({
+      ...current,
+      [targetKey]: (current[targetKey] ?? 0) + 1,
+    }));
+    const pending = attachmentQueueRef.current.then(() => addComposerAttachments(files));
+    attachmentQueueRef.current = pending.catch(() => undefined);
+    const settle = () => {
+      setPendingAttachmentCounts((current) => {
+        const nextCount = (current[targetKey] ?? 1) - 1;
+        if (nextCount > 0) return { ...current, [targetKey]: nextCount };
+        const { [targetKey]: _settled, ...remaining } = current;
+        return remaining;
+      });
+    };
+    void pending.then(settle, settle);
+    return pending;
   };
 
   const removeComposerImage = (imageId: string) => {
@@ -2404,10 +2599,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
     const files = Array.from(event.clipboardData.files);
     if (files.length === 0) return;
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length === 0) return;
     event.preventDefault();
-    void addComposerImages(imageFiles);
+    void enqueueComposerAttachments(files);
   };
 
   const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
@@ -2441,7 +2634,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     dragDepthRef.current = 0;
     setIsDragOverComposer(false);
     const files = Array.from(event.dataTransfer.files);
-    void addComposerImages(files);
+    void enqueueComposerAttachments(files);
     focusComposer();
   };
 
@@ -2635,6 +2828,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           composerEditorRef.current?.focusAt(nextCollapsedCursor);
         });
       },
+      releaseTextAttachmentClaims: (releasedPrompt = promptRef.current) => {
+        setTextAttachmentClaimsHeld(false);
+        const reconciler = getTextAttachmentClaimReconciler();
+        reconciler.confirmPaths(textAttachmentClaimChanges(new Set(), releasedPrompt).nextPaths);
+        reconciler.setDesiredPaths([]);
+      },
+      holdTextAttachmentClaims: () => {
+        setTextAttachmentClaimsHeld(true);
+      },
+      resumeTextAttachmentClaims: () => {
+        setTextAttachmentClaimsHeld(false);
+      },
       getSendContext: () => ({
         prompt: promptRef.current,
         images: composerImagesRef.current,
@@ -2657,6 +2862,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerCursor,
       composerTerminalContexts,
       insertComposerDraftTerminalContext,
+      getTextAttachmentClaimReconciler,
       promptRef,
       composerImagesRef,
       composerTerminalContextsRef,
@@ -3224,8 +3430,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isRunning={phase === "running"}
                   showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}
                   promptHasText={prompt.trim().length > 0}
-                  isSendBusy={isSendBusy}
                   sendDisabledReason={sendDisabledReason}
+                  isSendBusy={isSendBusy || isAttachingFiles}
                   isConnecting={isConnecting}
                   isEnvironmentUnavailable={
                     environmentUnavailable !== null ||

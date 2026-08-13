@@ -1,6 +1,7 @@
 import {
   ClientPresentation,
   CloudSession,
+  ConnectionPersistenceError,
   EnvironmentOwnedDataCleanup,
   PlatformConnectionSource,
   PrimaryEnvironmentAuth,
@@ -20,17 +21,19 @@ import {
   PrimaryConnectionRegistration,
   PrimaryConnectionTarget,
   Wakeups,
+  EnvironmentSupervisor,
 } from "@t3tools/client-runtime/connection";
 import { bootstrapRemoteBearerSession } from "@t3tools/client-runtime/authorization";
 import { fetchRemoteEnvironmentDescriptor } from "@t3tools/client-runtime/environment";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
-import { EnvironmentRpcRequestObserver } from "@t3tools/client-runtime/rpc";
+import { EnvironmentRpcRequestObserver, request } from "@t3tools/client-runtime/rpc";
 import {
   AuthStandardClientScopes,
   type DesktopBridge,
   type DesktopEnvironmentBootstrap,
   type DesktopSshEnvironmentTarget,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
+  WS_METHODS,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -48,7 +51,20 @@ import {
   readPrimaryEnvironmentTarget,
   type PrimaryEnvironmentTarget,
 } from "../environments/primary/target";
-import { clearComposerDraftsEnvironment } from "../composerDraftStore";
+import {
+  clearComposerDraftsEnvironment,
+  composerDraftEntriesEnvironment,
+} from "../composerDraftStore";
+import {
+  disposeTextAttachmentClaimEnvironment,
+  clearTextAttachmentUploadEnvironment,
+  fenceTextAttachmentUploadEnvironment,
+  pauseTextAttachmentClaimEnvironment,
+  pendingTextAttachmentClaimReleases,
+  resumeTextAttachmentClaimEnvironment,
+  resumeTextAttachmentUploadEnvironment,
+  textAttachmentClaims,
+} from "../textAttachmentClaims";
 import { isHostedStaticApp } from "../hostedPairing";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { acknowledgeRpcRequest, trackRpcRequestSent } from "../rpc/requestLatencyState";
@@ -576,8 +592,61 @@ const platformConnectionSourceLayer = Layer.effect(
 const environmentOwnedDataCleanupLayer = Layer.succeed(
   EnvironmentOwnedDataCleanup,
   EnvironmentOwnedDataCleanup.of({
+    prepare: (environmentId, supervisor) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => fenceTextAttachmentUploadEnvironment(environmentId));
+        yield* Effect.promise(() => pauseTextAttachmentClaimEnvironment(environmentId));
+        const claims = [
+          ...composerDraftEntriesEnvironment(environmentId).flatMap(({ target, prompt }) =>
+            textAttachmentClaims(target, prompt),
+          ),
+          ...pendingTextAttachmentClaimReleases(environmentId),
+        ].filter(
+          (claim, index, all) =>
+            all.findIndex(
+              (candidate) =>
+                candidate.path === claim.path && candidate.draftOwnerId === claim.draftOwnerId,
+            ) === index,
+        );
+        if (claims.length > 0 && !supervisor) {
+          resumeTextAttachmentClaimEnvironment(environmentId);
+          resumeTextAttachmentUploadEnvironment(environmentId);
+          return yield* new ConnectionPersistenceError({
+            operation: "clear-environment",
+            message: "Could not release text attachment draft claims without a connection.",
+          });
+        }
+        if (supervisor) {
+          const releaseResult = yield* Effect.exit(
+            Effect.forEach(
+              claims,
+              ({ path, draftOwnerId }) =>
+                request(WS_METHODS.assetsReleaseTextAttachment, { path, draftOwnerId }).pipe(
+                  Effect.provideService(EnvironmentSupervisor, supervisor),
+                  Effect.retry({ times: 2 }),
+                ),
+              { concurrency: 1, discard: true },
+            ),
+          );
+          if (releaseResult._tag === "Failure") {
+            resumeTextAttachmentClaimEnvironment(environmentId);
+            resumeTextAttachmentUploadEnvironment(environmentId);
+            return yield* new ConnectionPersistenceError({
+              operation: "clear-environment",
+              message: "Could not release text attachment draft claims.",
+            });
+          }
+        }
+      }),
+    resume: (environmentId) =>
+      Effect.sync(() => {
+        resumeTextAttachmentClaimEnvironment(environmentId);
+        resumeTextAttachmentUploadEnvironment(environmentId);
+      }),
     clear: (environmentId) =>
       Effect.sync(() => {
+        disposeTextAttachmentClaimEnvironment(environmentId);
+        clearTextAttachmentUploadEnvironment(environmentId);
         clearComposerDraftsEnvironment(environmentId);
       }),
   }),

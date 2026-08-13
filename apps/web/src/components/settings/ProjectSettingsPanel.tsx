@@ -35,7 +35,6 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 
-import { useComposerDraftStore } from "../../composerDraftStore";
 import { isElectron } from "../../env";
 import {
   useClientSettings,
@@ -68,8 +67,12 @@ import {
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { projectEnvironment } from "../../state/projects";
+import { assetEnvironment } from "../../state/assets";
 import { primaryServerProvidersAtom, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { refreshAndReadArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
+import { prepareProjectTextAttachmentCleanup } from "../../projectTextAttachmentCleanup";
+import { getProjectRemovalThreadRefs } from "../Sidebar.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { ProjectFavicon } from "../ProjectFavicon";
@@ -310,6 +313,9 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
   const threads = useThreadShells();
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
   const deleteProject = useAtomCommand(projectEnvironment.delete, { reportFailure: false });
+  const releaseTextAttachment = useAtomCommand(assetEnvironment.releaseTextAttachment, {
+    reportFailure: false,
+  });
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
     reportFailure: false,
   });
@@ -705,12 +711,40 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
       );
       if (confirmed._tag === "Failure" || !confirmed.value) return;
 
-      const draftStore = useComposerDraftStore.getState();
       for (const member of members) {
         const memberThreads = projectThreads.filter(
           (thread) =>
             thread.environmentId === member.environmentId && thread.projectId === member.id,
         );
+        const archivedResult = await refreshAndReadArchivedThreadSnapshots([member.environmentId]);
+        if (archivedResult.error !== null) {
+          toastManager.add({
+            type: "error",
+            title: `Failed to remove "${member.title}"`,
+            description: "Could not load archived threads before removing the project.",
+          });
+          return;
+        }
+        const archivedThreads = archivedResult.snapshots.flatMap(({ environmentId, snapshot }) =>
+          snapshot.threads.map((thread) => ({ ...thread, environmentId })),
+        );
+        const projectRef = scopeProjectRef(member.environmentId, member.id);
+        const cleanup = await prepareProjectTextAttachmentCleanup({
+          projectRef,
+          threadRefs: getProjectRemovalThreadRefs({
+            environmentId: member.environmentId,
+            projectId: member.id,
+            liveThreads: threads,
+            archivedThreads,
+          }),
+          release: async ({ environmentId, path, draftOwnerId }) => {
+            const released = await releaseTextAttachment({
+              environmentId,
+              input: { path, draftOwnerId },
+            });
+            return released._tag === "Success";
+          },
+        });
         const result = mapAtomCommandResult(
           await deleteProject({
             environmentId: member.environmentId,
@@ -722,15 +756,17 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
           () => undefined,
         );
         if (result._tag === "Failure") {
+          cleanup.rollback();
           reportFailure(`Failed to remove "${member.title}"`, result);
           return;
         }
-        const projectRef = scopeProjectRef(member.environmentId, member.id);
-        const projectDraftThread = draftStore.getDraftThreadByProjectRef(projectRef);
-        if (projectDraftThread) {
-          draftStore.clearDraftThread(projectDraftThread.draftId);
+        const releaseResult = await cleanup.commit();
+        if (!releaseResult.durable) {
+          toastManager.add({
+            type: "warning",
+            title: "Some attachment cleanup will retry while this app stays open",
+          });
         }
-        draftStore.clearProjectDraftThreadId(projectRef);
       }
 
       // The project's settings page just deleted itself; there is no projects
@@ -744,6 +780,7 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
       group.displayName,
       group.memberProjects.length,
       navigate,
+      releaseTextAttachment,
       reportFailure,
       threads,
     ],

@@ -322,6 +322,7 @@ import {
   resolveThreadMetadataUpdateForNextTurn,
   resolveThreadVisitCompletedAt,
   resolveSendEnvMode,
+  shouldReleaseTextAttachmentClaims,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
   shouldWriteThreadErrorToCurrentServerThread,
@@ -5061,13 +5062,26 @@ function ChatViewContent(props: ChatViewProps) {
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
       });
+      composerRef.current?.holdTextAttachmentClaims();
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      await onSubmitPlanFollowUp({
+      const sent = await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
       });
+      if (sent) {
+        composerRef.current?.releaseTextAttachmentClaims(promptForSend);
+      } else {
+        promptRef.current = promptForSend;
+        setComposerDraftPrompt(composerDraftTarget, promptForSend);
+        composerRef.current?.resumeTextAttachmentClaims();
+        composerRef.current?.resetCursorState({
+          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
+          prompt: promptForSend,
+          detectTrigger: true,
+        });
+      }
       return;
     }
     const isStandaloneTextCommand =
@@ -5083,6 +5097,7 @@ function ChatViewContent(props: ChatViewProps) {
         : null;
     if (standaloneSlashCommand) {
       handleInteractionModeChange(standaloneSlashCommand);
+      composerRef.current?.releaseTextAttachmentClaims(promptForSend);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
@@ -5413,6 +5428,7 @@ function ChatViewContent(props: ChatViewProps) {
         }),
       );
     }
+    composerRef.current?.holdTextAttachmentClaims();
     promptRef.current = "";
     clearComposerDraftContent(composerDraftTarget);
     composerRef.current?.resetCursorState();
@@ -5535,6 +5551,9 @@ function ChatViewContent(props: ChatViewProps) {
       } else {
         turnStartSucceeded = true;
         acknowledgeActiveThreadWoke();
+        if (shouldReleaseTextAttachmentClaims(turnStartSucceeded)) {
+          composerRef.current?.releaseTextAttachmentClaims(promptForSend);
+        }
       }
     }
 
@@ -5581,6 +5600,7 @@ function ChatViewContent(props: ChatViewProps) {
           error instanceof Error ? error.message : "Failed to send message.",
         );
       }
+      composerRef.current?.resumeTextAttachmentClaims();
     }
     sendInFlightRef.current = false;
     if (!turnStartSucceeded) {
@@ -5783,17 +5803,17 @@ function ChatViewContent(props: ChatViewProps) {
         isConnecting ||
         sendInFlightRef.current
       ) {
-        return;
+        return false;
       }
 
       const trimmed = text.trim();
       if (!trimmed) {
-        return;
+        return false;
       }
 
       const sendCtx = composerRef.current?.getSendContext();
       if (!sendCtx?.providerAvailable) {
-        return;
+        return false;
       }
       const {
         selectedProvider: ctxSelectedProvider,
@@ -5897,7 +5917,7 @@ function ChatViewContent(props: ChatViewProps) {
       if (failure === null) {
         acknowledgeActiveThreadWoke();
         sendInFlightRef.current = false;
-        return;
+        return true;
       }
 
       setOptimisticUserMessages((existing) =>
@@ -5912,6 +5932,7 @@ function ChatViewContent(props: ChatViewProps) {
       }
       sendInFlightRef.current = false;
       resetLocalDispatch();
+      return false;
     },
     [
       activeThread,

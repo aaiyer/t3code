@@ -17,6 +17,7 @@ import { getFallbackThreadIdAfterDelete, pinOrderKeyBetween } from "../component
 import { useComposerDraftStore } from "../composerDraftStore";
 import { terminalEnvironment } from "../state/terminal";
 import { threadEnvironment } from "../state/threads";
+import { assetEnvironment } from "../state/assets";
 import { vcsEnvironment } from "../state/vcs";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsState";
@@ -38,6 +39,15 @@ import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useClientSettings } from "./useSettings";
 import { useAtomCommand } from "../state/use-atom-command";
+import {
+  tombstoneTextAttachmentUploadOwner,
+  detachedTextAttachmentReleaseComplete,
+  fenceTextAttachmentUploadOwner,
+  releaseTextAttachmentClaimsInBackground,
+  resumeTextAttachmentUploadOwner,
+  textAttachmentClaims,
+  textAttachmentDraftOwnerId,
+} from "../textAttachmentClaims";
 
 export class ThreadArchiveBlockedError extends Schema.TaggedErrorClass<ThreadArchiveBlockedError>()(
   "ThreadArchiveBlockedError",
@@ -167,6 +177,9 @@ export function useThreadActions() {
   const unsnoozeThreadMutation = useAtomCommand(threadEnvironment.unsnooze, {
     reportFailure: false,
   });
+  const releaseTextAttachment = useAtomCommand(assetEnvironment.releaseTextAttachment, {
+    reportFailure: false,
+  });
   const stopThreadSession = useAtomCommand(threadEnvironment.stopSession);
   const removeWorktree = useAtomCommand(vcsEnvironment.removeWorktree, {
     reportFailure: false,
@@ -273,11 +286,32 @@ export function useThreadActions() {
     async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
       const resolved = resolveThreadTarget(target);
       if (!resolved) {
-        // Thread not in main store (e.g. archived thread) — dispatch delete directly.
+        const draftOwnerId = textAttachmentDraftOwnerId(target);
+        const discardedPrompt =
+          useComposerDraftStore.getState().getComposerDraft(target)?.prompt ?? "";
+        await fenceTextAttachmentUploadOwner(target.environmentId, draftOwnerId);
         const result = await deleteThreadMutation({
           environmentId: target.environmentId,
           input: { threadId: target.threadId },
         });
+        if (result._tag === "Failure") {
+          resumeTextAttachmentUploadOwner(target.environmentId, draftOwnerId);
+          return result;
+        }
+        await releaseTextAttachmentClaimsInBackground({
+          environmentId: target.environmentId,
+          claims: textAttachmentClaims(target, discardedPrompt),
+          draftOwnerIds: [draftOwnerId],
+          release: async ({ path, draftOwnerId: ownerId }) => {
+            const released = await releaseTextAttachment({
+              environmentId: target.environmentId,
+              input: { path, draftOwnerId: ownerId },
+            });
+            return detachedTextAttachmentReleaseComplete(released);
+          },
+        });
+        clearComposerDraftForThread(target);
+        tombstoneTextAttachmentUploadOwner(target.environmentId, draftOwnerId);
         if (result._tag === "Success") {
           refreshArchivedThreadsForEnvironment(target.environmentId);
         }
@@ -340,6 +374,11 @@ export function useThreadActions() {
         });
       }
 
+      await fenceTextAttachmentUploadOwner(
+        threadRef.environmentId,
+        textAttachmentDraftOwnerId(threadRef),
+      );
+
       await closeTerminal({
         environmentId: threadRef.environmentId,
         input: { threadId: threadRef.threadId, deleteHistory: true },
@@ -356,13 +395,31 @@ export function useThreadActions() {
         deletedThreadIds,
         sortOrder: sidebarThreadSortOrder,
       });
+      const discardedPrompt =
+        useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt ?? "";
       const deleteResult = await deleteThreadMutation({
         environmentId: threadRef.environmentId,
         input: { threadId: threadRef.threadId },
       });
       if (deleteResult._tag === "Failure") {
+        resumeTextAttachmentUploadOwner(
+          threadRef.environmentId,
+          textAttachmentDraftOwnerId(threadRef),
+        );
         return deleteResult;
       }
+      await releaseTextAttachmentClaimsInBackground({
+        environmentId: threadRef.environmentId,
+        claims: textAttachmentClaims(threadRef, discardedPrompt),
+        draftOwnerIds: [textAttachmentDraftOwnerId(threadRef)],
+        release: async ({ path, draftOwnerId }) => {
+          const result = await releaseTextAttachment({
+            environmentId: threadRef.environmentId,
+            input: { path, draftOwnerId },
+          });
+          return detachedTextAttachmentReleaseComplete(result);
+        },
+      });
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);
       clearComposerDraftForThread(threadRef);
       clearProjectDraftThreadById(
@@ -370,6 +427,10 @@ export function useThreadActions() {
         threadRef,
       );
       clearTerminalUiState(threadRef);
+      tombstoneTextAttachmentUploadOwner(
+        threadRef.environmentId,
+        textAttachmentDraftOwnerId(threadRef),
+      );
 
       if (shouldNavigateToFallback) {
         if (fallbackThreadId) {
@@ -457,6 +518,7 @@ export function useThreadActions() {
       clearProjectDraftThreadById,
       clearTerminalUiState,
       closeTerminal,
+      releaseTextAttachment,
       deleteThreadMutation,
       getCurrentRouteThreadRef,
       refreshVcsStatus,

@@ -4,6 +4,8 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
+  getProjectRemovalThreadRefs,
+  getProjectRemovalConfirmationMessage,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
@@ -24,6 +26,7 @@ import {
   searchSidebarThreadsByTitle,
   formatWorkingDurationLabel,
   shouldNavigateAfterProjectRemoval,
+  runStableProjectRemovalConfirmation,
   shouldClearThreadSelectionOnMouseDown,
   sortLogicalProjectsForSidebar,
   sortSettledThreadsForSidebar,
@@ -43,7 +46,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
-
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -203,6 +206,96 @@ describe("buildMultiSelectThreadContextMenuItems", () => {
     expect(
       buildMultiSelectThreadContextMenuItems({ count: 2, hasRunningThread: true }),
     ).toContainEqual({ id: "archive", label: "Archive (2)", disabled: true });
+  });
+});
+
+describe("getProjectRemovalThreadRefs", () => {
+  it("includes archived server threads with composer drafts", () => {
+    const projectId = ProjectId.make("project-a");
+    const liveThreadId = ThreadId.make("thread-live");
+    const archivedThreadId = ThreadId.make("thread-archived");
+
+    expect(
+      getProjectRemovalThreadRefs({
+        environmentId: localEnvironmentId,
+        projectId,
+        liveThreads: [{ environmentId: localEnvironmentId, id: liveThreadId, projectId }],
+        archivedThreads: [
+          { environmentId: localEnvironmentId, id: archivedThreadId, projectId },
+          { environmentId: localEnvironmentId, id: liveThreadId, projectId },
+          {
+            environmentId: localEnvironmentId,
+            id: ThreadId.make("thread-other-project"),
+            projectId: ProjectId.make("project-b"),
+          },
+        ],
+      }),
+    ).toEqual([
+      scopeThreadRef(localEnvironmentId, liveThreadId),
+      scopeThreadRef(localEnvironmentId, archivedThreadId),
+    ]);
+  });
+
+  it("uses permanent-history copy for an archived-only project", () => {
+    const message = getProjectRemovalConfirmationMessage({
+      title: "Archived project",
+      workspaceRoot: "/workspace/archived",
+      environmentLabel: null,
+      threadCount: 1,
+    });
+
+    expect(message).toContain("delete its 1 thread?");
+    expect(message).toContain("permanently clears conversation history");
+    expect(message).toContain("cannot be undone");
+  });
+});
+
+describe("runStableProjectRemovalConfirmation", () => {
+  it("does not remove when a second snapshot adds an archived thread", async () => {
+    const firstThreadRef = scopeThreadRef(localEnvironmentId, ThreadId.make("thread-first"));
+    const archivedThreadRef = scopeThreadRef(localEnvironmentId, ThreadId.make("thread-archived"));
+    const readSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce({ threadRefs: [firstThreadRef], value: "before" })
+      .mockResolvedValueOnce({
+        threadRefs: [firstThreadRef, archivedThreadRef],
+        value: "after",
+      });
+    const remove = vi.fn(async () => undefined);
+
+    const result = await runStableProjectRemovalConfirmation({
+      readSnapshot,
+      confirm: vi.fn(async () => true),
+      remove,
+    });
+
+    expect(result).toEqual({ status: "changed" });
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("removes when the exact scoped thread set is unchanged", async () => {
+    const firstThreadRef = scopeThreadRef(localEnvironmentId, ThreadId.make("thread-first"));
+    const secondThreadRef = scopeThreadRef(localEnvironmentId, ThreadId.make("thread-second"));
+    const readSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce({
+        threadRefs: [firstThreadRef, secondThreadRef],
+        value: "before",
+      })
+      .mockResolvedValueOnce({
+        threadRefs: [secondThreadRef, firstThreadRef],
+        value: "after",
+      });
+    const remove = vi.fn(async (snapshot: { value: string }) => snapshot.value);
+
+    const result = await runStableProjectRemovalConfirmation({
+      readSnapshot,
+      confirm: vi.fn(async () => true),
+      remove,
+    });
+
+    expect(result).toEqual({ status: "removed", result: "after" });
+    expect(remove).toHaveBeenCalledOnce();
   });
 });
 

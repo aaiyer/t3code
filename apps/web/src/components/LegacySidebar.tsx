@@ -111,6 +111,7 @@ import { useDesktopUpdateState } from "../state/desktopUpdate";
 
 import { useThreadActions } from "../hooks/useThreadActions";
 import { projectEnvironment } from "../state/projects";
+import { assetEnvironment } from "../state/assets";
 import { useEnvironmentQuery } from "../state/query";
 import { threadEnvironment, useEnvironmentThread } from "../state/threads";
 import { vcsEnvironment } from "../state/vcs";
@@ -168,9 +169,12 @@ import {
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { openCommandPalette } from "../commandPaletteBus";
+import { refreshAndReadArchivedThreadSnapshots } from "../lib/archivedThreadsState";
+import { prepareProjectTextAttachmentCleanup } from "../projectTextAttachmentCleanup";
 import {
   archiveSelectedThreadEntries,
   buildMultiSelectThreadContextMenuItems,
+  getProjectRemovalThreadRefs,
   getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
@@ -1130,6 +1134,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const deleteProject = useAtomCommand(projectEnvironment.delete, {
     reportFailure: false,
   });
+  const releaseTextAttachment = useAtomCommand(assetEnvironment.releaseTextAttachment, {
+    reportFailure: false,
+  });
   const updateProject = useAtomCommand(projectEnvironment.update, {
     reportFailure: false,
   });
@@ -1477,6 +1484,30 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const removeProject = useCallback(
     async (member: SidebarProjectGroupMember, options: { force?: boolean } = {}) => {
       const memberProjectRef = scopeProjectRef(member.environmentId, member.id);
+      const archivedResult = await refreshAndReadArchivedThreadSnapshots([member.environmentId]);
+      if (archivedResult.error !== null) {
+        throw new Error("Could not load archived threads before removing the project.");
+      }
+      const archivedThreads = archivedResult.snapshots.flatMap(({ environmentId, snapshot }) =>
+        snapshot.threads.map((thread) => ({ ...thread, environmentId })),
+      );
+      const threadRefs = getProjectRemovalThreadRefs({
+        environmentId: member.environmentId,
+        projectId: member.id,
+        liveThreads: Array.from(sidebarThreadByKeyRef.current.values()),
+        archivedThreads,
+      });
+      const cleanup = await prepareProjectTextAttachmentCleanup({
+        projectRef: memberProjectRef,
+        threadRefs,
+        release: async ({ environmentId, path, draftOwnerId }) => {
+          const released = await releaseTextAttachment({
+            environmentId,
+            input: { path, draftOwnerId },
+          });
+          return released._tag === "Success";
+        },
+      });
       const result = await deleteProject({
         environmentId: member.environmentId,
         input: {
@@ -1485,17 +1516,19 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         },
       });
       if (result._tag === "Failure") {
+        cleanup.rollback();
         return result;
       }
-      const draftStore = useComposerDraftStore.getState();
-      const projectDraftThread = draftStore.getDraftThreadByProjectRef(memberProjectRef);
-      if (projectDraftThread) {
-        draftStore.clearDraftThread(projectDraftThread.draftId);
+      const releaseResult = await cleanup.commit();
+      if (!releaseResult.durable) {
+        toastManager.add({
+          type: "warning",
+          title: "Some attachment cleanup will retry while this app stays open",
+        });
       }
-      draftStore.clearProjectDraftThreadId(memberProjectRef);
       return result;
     },
-    [deleteProject],
+    [deleteProject, releaseTextAttachment],
   );
 
   const handleRemoveProject = useCallback(
