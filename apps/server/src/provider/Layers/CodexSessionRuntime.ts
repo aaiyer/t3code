@@ -679,6 +679,48 @@ interface CollabAgentExecutionSettings {
   readonly effort: string | undefined;
 }
 
+const COLLAB_USAGE_FIELDS = [
+  "totalTokens",
+  "inputTokens",
+  "cachedInputTokens",
+  "cacheWriteInputTokens",
+  "outputTokens",
+  "reasoningOutputTokens",
+] as const;
+
+type CollabUsageBaseline = Partial<Record<(typeof COLLAB_USAGE_FIELDS)[number], number>>;
+
+/** Forked Codex threads report totals that include their inherited context. */
+function rebaseCollabTokenUsage(
+  tokenUsage: unknown,
+  baseline: CollabUsageBaseline | undefined,
+): { readonly tokenUsage: unknown; readonly baseline: CollabUsageBaseline | undefined } {
+  if (typeof tokenUsage !== "object" || tokenUsage === null) {
+    return { tokenUsage, baseline };
+  }
+  const usage = tokenUsage as Record<string, unknown>;
+  if (typeof usage.total !== "object" || usage.total === null) {
+    return { tokenUsage, baseline };
+  }
+  const total = usage.total as Record<string, unknown>;
+  const snapshot: CollabUsageBaseline = {};
+  for (const field of COLLAB_USAGE_FIELDS) {
+    const value = total[field];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) snapshot[field] = value;
+  }
+  const effectiveBaseline = baseline ?? snapshot;
+  const rebasedTotal = { ...total };
+  for (const field of COLLAB_USAGE_FIELDS) {
+    const value = snapshot[field];
+    if (value !== undefined)
+      rebasedTotal[field] = Math.max(0, value - (effectiveBaseline[field] ?? 0));
+  }
+  return {
+    tokenUsage: { ...usage, total: rebasedTotal },
+    baseline: effectiveBaseline,
+  };
+}
+
 function rememberCollabReceiverSettings(
   settingsByThread: Map<string, CollabAgentExecutionSettings>,
   notification: CodexServerNotification,
@@ -906,6 +948,7 @@ export const makeCodexSessionRuntime = (
       new Map<string, CollabAgentExecutionSettings>(),
     );
     const collabChildAgentsRef = yield* Ref.make(new Map<string, CollabChildAgentState>());
+    const collabChildUsageBaselinesRef = yield* Ref.make(new Map<string, CollabUsageBaseline>());
     /** Child provider-thread id → its currently running provider turn id. */
     const collabChildLiveTurnsRef = yield* Ref.make(new Map<string, string>());
     const closedRef = yield* Ref.make(false);
@@ -1258,7 +1301,17 @@ export const makeCodexSessionRuntime = (
             });
             return true;
           }
-          case "thread/tokenUsage/updated":
+          case "thread/tokenUsage/updated": {
+            const baselines = yield* Ref.get(collabChildUsageBaselinesRef);
+            const rebased = rebaseCollabTokenUsage(
+              notification.params.tokenUsage,
+              baselines.get(child.agentThreadId),
+            );
+            if (!baselines.has(child.agentThreadId) && rebased.baseline) {
+              const next = new Map(baselines);
+              next.set(child.agentThreadId, rebased.baseline);
+              yield* Ref.set(collabChildUsageBaselinesRef, next);
+            }
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
@@ -1266,10 +1319,11 @@ export const makeCodexSessionRuntime = (
               method: "collabAgent/tokenUsage",
               payload: {
                 ...childIdentity,
-                tokenUsage: notification.params.tokenUsage,
+                tokenUsage: rebased.tokenUsage,
               },
             });
             return true;
+          }
           case "item/started":
           case "item/completed":
             yield* emitEvent({
@@ -1279,6 +1333,7 @@ export const makeCodexSessionRuntime = (
               method: "collabAgent/item",
               payload: {
                 ...childIdentity,
+                itemPhase: notification.method === "item/completed" ? "completed" : "started",
                 item: notification.params.item,
               },
             });

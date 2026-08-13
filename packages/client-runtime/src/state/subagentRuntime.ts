@@ -84,6 +84,7 @@ export interface RuntimeSubagent {
   readonly firstSeenAt: string;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+  readonly lastMessageAt: string | null;
   readonly updatedAt: string;
 }
 
@@ -252,6 +253,7 @@ interface MutableAgent {
   firstSeenAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  lastMessageAt: string | null;
   updatedAt: string;
 }
 
@@ -306,6 +308,7 @@ function getOrCreate(
     firstSeenAt: at,
     startedAt: null,
     completedAt: null,
+    lastMessageAt: null,
     updatedAt: at,
   };
   agents.set(id, created);
@@ -533,6 +536,7 @@ export function foldSubagentActivities(
         }
         const error = asString(payload.error);
         if (error) agent.error = bounded(error);
+        if (payload.messageReceived === true) agent.lastMessageAt = at;
         agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
         agent.updatedAt = at;
         break;

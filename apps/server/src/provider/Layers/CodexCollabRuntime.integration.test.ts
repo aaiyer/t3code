@@ -123,6 +123,33 @@ describe("CodexSessionRuntime collab integration", () => {
       );
       assert.isDefined(childClosed, "child B's close becomes an agent event");
 
+      const childUsage = events.filter(
+        (event) =>
+          event.method === "collabAgent/tokenUsage" &&
+          (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
+      );
+      assert.lengthOf(childUsage, 2);
+      const firstTotal =
+        (childUsage[0]?.payload as { tokenUsage?: { total?: Record<string, number> } }).tokenUsage
+          ?.total ?? {};
+      const secondTotal =
+        (childUsage[1]?.payload as { tokenUsage?: { total?: Record<string, number> } }).tokenUsage
+          ?.total ?? {};
+      assert.deepInclude(firstTotal, {
+        totalTokens: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+      });
+      assert.deepInclude(secondTotal, {
+        totalTokens: 20_773,
+        inputTokens: 20_768,
+        cachedInputTokens: 20_224,
+        outputTokens: 5,
+        reasoningOutputTokens: 0,
+      });
+
       // Parent-owned resolution passes through — not swallowed, not
       // re-labelled as an agent event.
       assert.include(methods, "serverRequest/resolved");
