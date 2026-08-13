@@ -56,6 +56,8 @@ export const ResourceMonitorCapabilities = Schema.Struct({
   ioBytes: Schema.Boolean,
   processStartTime: Schema.Boolean,
   processTree: Schema.Boolean,
+  hostCpu: Schema.optionalKey(Schema.Boolean),
+  hostMemory: Schema.optionalKey(Schema.Boolean),
 });
 export type ResourceMonitorCapabilities = typeof ResourceMonitorCapabilities.Type;
 
@@ -76,6 +78,19 @@ export const ResourceMonitorProcessSample = Schema.Struct({
   ioSemantics: Schema.Literals(["storage", "all-io"]),
 });
 export type ResourceMonitorProcessSample = typeof ResourceMonitorProcessSample.Type;
+
+export const ResourceMonitorHostSample = Schema.Struct({
+  cpuPercent: Schema.Number,
+  logicalCpuCount: PositiveInt,
+  totalMemoryBytes: NonNegativeInt,
+  usedMemoryBytes: NonNegativeInt,
+  availableMemoryBytes: NonNegativeInt,
+  uptimeMs: NonNegativeInt,
+  loadAverageOne: Schema.Number,
+  loadAverageFive: Schema.Number,
+  loadAverageFifteen: Schema.Number,
+});
+export type ResourceMonitorHostSample = typeof ResourceMonitorHostSample.Type;
 
 export const ResourceMonitorConfigureCommand = Schema.Struct({
   version: Schema.Literal(RESOURCE_MONITOR_PROTOCOL_VERSION),
@@ -163,6 +178,7 @@ export const ResourceMonitorSnapshotEvent = Schema.Struct({
   inaccessibleProcessCount: NonNegativeInt,
   requestId: Schema.optionalKey(TrimmedNonEmptyString),
   externalProcesses: Schema.optionalKey(Schema.Array(ResourceMonitorExternalProcess)),
+  host: Schema.optionalKey(ResourceMonitorHostSample),
   processes: Schema.Array(ResourceMonitorProcessSample),
 });
 export type ResourceMonitorSnapshotEvent = typeof ResourceMonitorSnapshotEvent.Type;
@@ -315,6 +331,19 @@ export const ResourceTelemetryAggregate = Schema.Struct({
 });
 export type ResourceTelemetryAggregate = typeof ResourceTelemetryAggregate.Type;
 
+export const ResourceTelemetryHost = Schema.Struct({
+  cpuPercent: Schema.Option(Schema.Number),
+  logicalCpuCount: Schema.Option(PositiveInt),
+  totalMemoryBytes: Schema.Option(NonNegativeInt),
+  usedMemoryBytes: Schema.Option(NonNegativeInt),
+  availableMemoryBytes: Schema.Option(NonNegativeInt),
+  uptimeMs: Schema.Option(NonNegativeInt),
+  loadAverageOne: Schema.Option(Schema.Number),
+  loadAverageFive: Schema.Option(Schema.Number),
+  loadAverageFifteen: Schema.Option(Schema.Number),
+});
+export type ResourceTelemetryHost = typeof ResourceTelemetryHost.Type;
+
 export const ResourceTelemetryGroups = Schema.Struct({
   backend: ResourceTelemetryAggregate,
   electron: ResourceTelemetryAggregate,
@@ -364,12 +393,22 @@ export const ResourceTelemetrySnapshot = Schema.Struct({
   sampleIntervalMs: NonNegativeInt,
   processes: Schema.Array(ResourceTelemetryProcess),
   groups: ResourceTelemetryGroups,
+  host: Schema.optionalKey(ResourceTelemetryHost),
   power: HostPowerSnapshot,
   speedLimitPercent: Schema.Option(Schema.Number),
   attribution: ResourceAttributionSnapshot,
   health: ResourceTelemetryHealth,
 });
 export type ResourceTelemetrySnapshot = typeof ResourceTelemetrySnapshot.Type;
+
+export const SystemVitalsSnapshot = Schema.Struct({
+  readAt: Schema.DateTimeUtc,
+  sampleIntervalMs: NonNegativeInt,
+  host: ResourceTelemetryHost,
+  t3: ResourceTelemetryAggregate,
+  health: ResourceTelemetrySourceHealth,
+});
+export type SystemVitalsSnapshot = typeof SystemVitalsSnapshot.Type;
 
 export const ResourceTelemetryHistoryInput = Schema.Struct({
   windowMs: NonNegativeInt,
@@ -386,6 +425,10 @@ export const ResourceTelemetryHistoryBucket = Schema.Struct({
   ioReadBytes: NonNegativeInt,
   ioWriteBytes: NonNegativeInt,
   maxProcessCount: NonNegativeInt,
+  hostAvgCpuPercent: Schema.optionalKey(Schema.Number),
+  hostMaxCpuPercent: Schema.optionalKey(Schema.Number),
+  hostMaxUsedMemoryBytes: Schema.optionalKey(NonNegativeInt),
+  hostTotalMemoryBytes: Schema.optionalKey(NonNegativeInt),
 });
 export type ResourceTelemetryHistoryBucket = typeof ResourceTelemetryHistoryBucket.Type;
 

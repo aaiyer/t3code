@@ -3,6 +3,7 @@ import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
@@ -14,6 +15,20 @@ import { cn } from "../../lib/cn";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
+import { useEnvironmentQuery } from "../../state/query";
+import { serverEnvironment } from "../../state/server";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[index]}`;
+}
 
 function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string | null {
   return connectionStatusText({
@@ -36,6 +51,21 @@ export function ConnectionEnvironmentRow(props: {
 }) {
   const [label, setLabel] = useState(props.environment.environmentLabel);
   const [url, setUrl] = useState(props.environment.displayUrl);
+  const vitals = useEnvironmentQuery(
+    props.expanded && props.environment.connectionState === "connected"
+      ? serverEnvironment.systemVitals({
+          environmentId: props.environment.environmentId,
+          input: {},
+        })
+      : null,
+  );
+  const hostCpu = vitals.data ? Option.getOrNull(vitals.data.host.cpuPercent) : null;
+  const hostUsedMemory = vitals.data ? Option.getOrNull(vitals.data.host.usedMemoryBytes) : null;
+  const hostTotalMemory = vitals.data ? Option.getOrNull(vitals.data.host.totalMemoryBytes) : null;
+  const hostMemoryPercent =
+    hostUsedMemory !== null && hostTotalMemory !== null && hostTotalMemory > 0
+      ? (hostUsedMemory / hostTotalMemory) * 100
+      : null;
 
   const mutedColor = useThemeColor("--color-icon-subtle");
   const primaryFg = useThemeColor("--color-primary-foreground");
@@ -131,6 +161,41 @@ export function ConnectionEnvironmentRow(props: {
           exiting={FadeOut.duration(150)}
           className="gap-3 px-4 pb-4"
         >
+          <View className="gap-2 rounded-[16px] border border-input-border bg-input p-3.5">
+            <Text className="text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted">
+              Environment health
+            </Text>
+            <View className="flex-row gap-3">
+              <View className="flex-1 gap-0.5">
+                <Text className="text-xs text-foreground-muted">Host CPU</Text>
+                <Text className="font-t3-bold text-foreground">
+                  {hostCpu === null ? "Unavailable" : `${hostCpu.toFixed(1)}%`}
+                </Text>
+              </View>
+              <View className="flex-1 gap-0.5">
+                <Text className="text-xs text-foreground-muted">Host memory</Text>
+                <Text className="font-t3-bold text-foreground">
+                  {hostMemoryPercent === null ? "Unavailable" : `${hostMemoryPercent.toFixed(1)}%`}
+                </Text>
+              </View>
+            </View>
+            <View className="flex-row gap-3">
+              <View className="flex-1 gap-0.5">
+                <Text className="text-xs text-foreground-muted">T3 CPU</Text>
+                <Text className="font-t3-bold text-foreground">
+                  {vitals.data ? `${vitals.data.t3.currentCpuPercent.toFixed(1)}%` : "—"}
+                </Text>
+              </View>
+              <View className="flex-1 gap-0.5">
+                <Text className="text-xs text-foreground-muted">T3 memory</Text>
+                <Text className="font-t3-bold text-foreground">
+                  {vitals.data ? formatBytes(vitals.data.t3.currentRssBytes) : "—"}
+                </Text>
+              </View>
+            </View>
+            {vitals.error ? <Text className="text-xs text-rose-500">{vitals.error}</Text> : null}
+          </View>
+
           {props.environment.isRelayManaged ? (
             <Text className="text-sm text-foreground-muted">
               Managed by T3 Connect. Tunnel details update automatically.

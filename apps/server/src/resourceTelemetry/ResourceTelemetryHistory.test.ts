@@ -354,4 +354,55 @@ describe("buildResourceTelemetryHistory", () => {
       "electron-main",
     );
   });
+
+  it("aggregates host CPU and memory into bounded history buckets", () => {
+    const first = snapshot(1, STARTED_AT_MS, 100, 1_000);
+    const second = snapshot(2, STARTED_AT_MS + 1_000, 200, 2_000);
+    const history = buildResourceTelemetryHistory({
+      readAt: DateTime.makeUnsafe(STARTED_AT_MS + 2_000),
+      windowMs: 10_000,
+      bucketMs: 10_000,
+      sampleIntervalMs: 1_000,
+      serverPid: SERVER_PID,
+      sidecarPid: Option.none(),
+      desktopSnapshot: Option.none(),
+      snapshots: [
+        {
+          ...first,
+          host: {
+            cpuPercent: 25,
+            logicalCpuCount: 8,
+            totalMemoryBytes: 16_000,
+            usedMemoryBytes: 8_000,
+            availableMemoryBytes: 8_000,
+            uptimeMs: 1_000,
+            loadAverageOne: 1,
+            loadAverageFive: 1,
+            loadAverageFifteen: 1,
+          },
+        },
+        {
+          ...second,
+          host: {
+            cpuPercent: 75,
+            logicalCpuCount: 8,
+            totalMemoryBytes: 16_000,
+            usedMemoryBytes: 12_000,
+            availableMemoryBytes: 4_000,
+            uptimeMs: 2_000,
+            loadAverageOne: 2,
+            loadAverageFive: 1.5,
+            loadAverageFifteen: 1,
+          },
+        },
+      ],
+      health,
+    });
+
+    const bucket = history.buckets.find((candidate) => candidate.hostAvgCpuPercent !== undefined);
+    expect(bucket?.hostAvgCpuPercent).toBe(50);
+    expect(bucket?.hostMaxCpuPercent).toBe(75);
+    expect(bucket?.hostMaxUsedMemoryBytes).toBe(12_000);
+    expect(bucket?.hostTotalMemoryBytes).toBe(16_000);
+  });
 });

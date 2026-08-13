@@ -47,6 +47,7 @@ function nativeSnapshot(input: {
   readonly childCpuTimeMs: number;
   readonly childWriteBytes: number;
   readonly externalProcesses?: ResourceMonitorSnapshotEvent["externalProcesses"];
+  readonly host?: ResourceMonitorSnapshotEvent["host"];
 }): ResourceMonitorSnapshotEvent {
   const processes = [
     processSample({
@@ -93,6 +94,7 @@ function nativeSnapshot(input: {
     ...(input.externalProcesses === undefined
       ? {}
       : { externalProcesses: input.externalProcesses }),
+    ...(input.host === undefined ? {} : { host: input.host }),
     processes,
   };
 }
@@ -142,6 +144,51 @@ function desktopSnapshot(sampledAtUnixMs: number): DesktopHostTelemetrySnapshot 
 }
 
 describe("ResourceTelemetry", () => {
+  it.effect("projects host metrics into a compact process-free system vitals snapshot", () =>
+    Effect.gen(function* () {
+      const sampledAtUnixMs = DateTime.toEpochMillis(yield* DateTime.now);
+      const sample = nativeSnapshot({
+        sequence: 1,
+        sampledAtUnixMs,
+        childCpuTimeMs: 100,
+        childWriteBytes: 1_000,
+        host: {
+          cpuPercent: 37.5,
+          logicalCpuCount: 8,
+          totalMemoryBytes: 16_000,
+          usedMemoryBytes: 10_000,
+          availableMemoryBytes: 6_000,
+          uptimeMs: 86_400_000,
+          loadAverageOne: 1.25,
+          loadAverageFive: 1,
+          loadAverageFifteen: 0.75,
+        },
+      });
+      const telemetryLayer = ResourceTelemetry.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            NativeTelemetryClient.layerTest({
+              sampleNow: Effect.succeed(nativeGeneration(sample, 0)),
+            }),
+            DesktopTelemetryReceiver.layerTest(),
+            ResourceAttribution.layer,
+          ),
+        ),
+      );
+
+      const vitals = yield* Effect.gen(function* () {
+        const telemetry = yield* ResourceTelemetry.ResourceTelemetry;
+        yield* telemetry.refresh;
+        return (yield* telemetry.subscribeSystemVitals).latest;
+      }).pipe(Effect.scoped, Effect.provide(telemetryLayer));
+
+      expect(Option.getOrThrow(vitals.host.cpuPercent)).toBe(37.5);
+      expect(Option.getOrThrow(vitals.host.totalMemoryBytes)).toBe(16_000);
+      expect(vitals.t3.processCount).toBeGreaterThan(0);
+      expect("processes" in vitals).toBe(false);
+    }),
+  );
+
   it.effect("enables live native and Electron collection only while changes are retained", () =>
     Effect.gen(function* () {
       const sampledAtUnixMs = DateTime.toEpochMillis(yield* DateTime.now);

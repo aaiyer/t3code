@@ -2341,6 +2341,16 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.subscribeSystemVitals]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeSystemVitals,
+            Stream.unwrap(
+              Effect.map(resourceTelemetry.subscribeSystemVitals, ({ latest, changes }) =>
+                Stream.concat(Stream.make(latest), changes),
+              ),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
       });
     }),
   );

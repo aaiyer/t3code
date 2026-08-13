@@ -38,6 +38,9 @@ interface AggregateSample {
   readonly processCount: number;
   readonly ioReadBytes: number;
   readonly ioWriteBytes: number;
+  readonly hostCpuPercent?: number;
+  readonly hostUsedMemoryBytes?: number;
+  readonly hostTotalMemoryBytes?: number;
 }
 
 interface ProcessSample {
@@ -128,6 +131,16 @@ function buildBuckets(input: {
           : sample.sampledAtMs < endedAtMs),
     );
     const cpuTotal = samples.reduce((total, sample) => total + sample.cpuPercent, 0);
+    const hostSamples = samples.filter(
+      (sample) =>
+        sample.hostCpuPercent !== undefined &&
+        sample.hostUsedMemoryBytes !== undefined &&
+        sample.hostTotalMemoryBytes !== undefined,
+    );
+    const hostCpuTotal = hostSamples.reduce(
+      (total, sample) => total + (sample.hostCpuPercent ?? 0),
+      0,
+    );
     buckets.push({
       startedAt: DateTime.makeUnsafe(startedAtMs),
       endedAt: DateTime.makeUnsafe(endedAtMs),
@@ -139,6 +152,18 @@ function buildBuckets(input: {
       ioWriteBytes: samples.reduce((total, sample) => total + sample.ioWriteBytes, 0),
       maxProcessCount:
         samples.length === 0 ? 0 : Math.max(...samples.map((sample) => sample.processCount)),
+      ...(hostSamples.length === 0
+        ? {}
+        : {
+            hostAvgCpuPercent: hostCpuTotal / hostSamples.length,
+            hostMaxCpuPercent: Math.max(...hostSamples.map((sample) => sample.hostCpuPercent ?? 0)),
+            hostMaxUsedMemoryBytes: Math.max(
+              ...hostSamples.map((sample) => sample.hostUsedMemoryBytes ?? 0),
+            ),
+            hostTotalMemoryBytes: Math.max(
+              ...hostSamples.map((sample) => sample.hostTotalMemoryBytes ?? 0),
+            ),
+          }),
     });
   }
   return buckets;
@@ -241,6 +266,13 @@ export function buildResourceTelemetryHistory(
       processCount: merged.groups.allT3.processCount,
       ioReadBytes: deltas.reduce((total, process) => total + process.ioReadBytes, 0),
       ioWriteBytes: deltas.reduce((total, process) => total + process.ioWriteBytes, 0),
+      ...(snapshot.host === undefined
+        ? {}
+        : {
+            hostCpuPercent: snapshot.host.cpuPercent,
+            hostUsedMemoryBytes: snapshot.host.usedMemoryBytes,
+            hostTotalMemoryBytes: snapshot.host.totalMemoryBytes,
+          }),
     });
     const backendDeltas = deltas.filter(
       (processDelta) =>
