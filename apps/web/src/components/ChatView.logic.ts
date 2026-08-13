@@ -51,6 +51,13 @@ export function startNewThreadForProject(
   return true;
 }
 
+export function resolveThreadVisitCompletedAt(
+  thread: Pick<Thread, "latestTurn"> | null | undefined,
+): string | null {
+  const completedAt = thread?.latestTurn?.completedAt;
+  return completedAt && !Number.isNaN(Date.parse(completedAt)) ? completedAt : null;
+}
+
 export function resolveThreadMetadataUpdateForNextTurn(input: {
   currentModelSelection: ModelSelection;
   nextModelSelection?: ModelSelection;
