@@ -10,6 +10,7 @@ import {
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   shouldToggleWorkEntryRowFromKeyDown,
+  shouldPreserveAssistantLineBreaks,
 } from "./MessagesTimeline.logic";
 import {
   buildSupplementalToolDetailBody,
@@ -36,6 +37,17 @@ function buildWorkLogEntry(overrides: Partial<WorkLogEntry>): WorkLogEntry {
     ...overrides,
   };
 }
+
+describe("shouldPreserveAssistantLineBreaks", () => {
+  it("preserves Claude insight formatting without changing regular markdown", () => {
+    expect(
+      shouldPreserveAssistantLineBreaks(
+        "★ Insight ─────────────────\\nFirst observation\\nSecond observation\\n─────────────────",
+      ),
+    ).toBe(true);
+    expect(shouldPreserveAssistantLineBreaks("A normal\\nmarkdown paragraph")).toBe(false);
+  });
+});
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {

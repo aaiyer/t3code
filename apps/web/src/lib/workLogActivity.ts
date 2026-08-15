@@ -72,7 +72,7 @@ export function parseWorkLogActivityPayload(
     title,
     strippedDetail:
       typeof payload?.detail === "string" ? stripTrailingExitCode(payload.detail).output : null,
-    detail: extractToolDetail(payload, title ?? options.heading),
+    detail: extractToolDetail(payload, title ?? options.heading, command, commandResult),
     toolCallId: extractToolCallId(payload),
     itemType,
     requestKind: extractWorkLogRequestKind(payload),
@@ -401,6 +401,30 @@ function firstIntegerFromRecord(
   return value !== null && Number.isInteger(value) ? value : null;
 }
 
+function extractAcpTextContent(value: unknown): string | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const chunks: string[] = [];
+  for (const entryValue of value) {
+    const entry = asRecord(entryValue);
+    if (entry?.type !== "content") {
+      continue;
+    }
+    const content = asRecord(entry.content);
+    if (content?.type !== "text") {
+      continue;
+    }
+    const text = asTrimmedString(content.text);
+    if (text) {
+      chunks.push(text);
+    }
+  }
+
+  return chunks.length > 0 ? chunks.join("\n") : null;
+}
+
 function extractCommandResult(
   payload: Record<string, unknown> | null,
   options: {
@@ -454,7 +478,8 @@ function extractCommandResult(
       : projectedRawOutput) ??
     stdout ??
     firstCommandOutputStringFromRecord(itemResult, ["content", "output", "text", "result"]) ??
-    firstCommandOutputStringFromRecord(item, ["aggregatedOutput", "output", "text", "result"]);
+    firstCommandOutputStringFromRecord(item, ["aggregatedOutput", "output", "text", "result"]) ??
+    extractAcpTextContent(data?.content);
   const strippedContent = content ? stripTrailingExitCode(content) : null;
   const detailExit =
     typeof payload?.detail === "string" ? stripTrailingExitCode(payload.detail) : null;
@@ -581,17 +606,40 @@ function isCommandToolDetail(payload: Record<string, unknown> | null, heading: s
 function extractToolDetail(
   payload: Record<string, unknown> | null,
   heading: string,
+  commandPreview: { command: string | null; rawCommand: string | null },
+  commandResult: { output: string | null; stdout: string | null; stderr: string | null },
 ): string | null {
   const rawDetail = asTrimmedString(payload?.detail);
   const detail = rawDetail ? stripTrailingExitCode(rawDetail).output : null;
   const normalizedHeading = normalizePreviewForComparison(heading);
   const normalizedDetail = normalizePreviewForComparison(detail);
+  const commandTool = isCommandToolDetail(payload, heading);
+  const normalizedCommand = normalizePreviewForComparison(commandPreview.command);
+  const normalizedRawCommand = normalizePreviewForComparison(commandPreview.rawCommand);
 
-  if (detail && normalizedHeading !== normalizedDetail) {
+  if (
+    detail &&
+    normalizedHeading !== normalizedDetail &&
+    (!commandTool ||
+      (normalizedCommand !== normalizedDetail && normalizedRawCommand !== normalizedDetail))
+  ) {
     return detail;
   }
 
-  if (isCommandToolDetail(payload, heading)) {
+  if (commandTool) {
+    if (!commandPreview.command) {
+      return null;
+    }
+    const streamOutput = [commandResult.stdout, commandResult.stderr].filter(Boolean).join("\n");
+    const output = asTrimmedString(streamOutput) ?? commandResult.output;
+    const normalizedOutput = normalizePreviewForComparison(output);
+    if (
+      output &&
+      normalizedOutput !== normalizedHeading &&
+      normalizedOutput !== normalizedCommand
+    ) {
+      return output;
+    }
     return null;
   }
 
