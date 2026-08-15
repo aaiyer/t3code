@@ -69,9 +69,22 @@ export function EnvironmentHealthPopover() {
               <ActivityIcon />
               <span className="min-w-0 flex-1 truncate">{environment.label}</span>
               {available ? (
-                <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
-                  {hostCpu === null ? "CPU —" : `${hostCpu.toFixed(0)}%`} ·{" "}
-                  {memoryPercent === null ? "RAM —" : `${memoryPercent.toFixed(0)}%`}
+                <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+                  <span
+                    aria-label={`CPU ${hostCpu === null ? "unavailable" : `${hostCpu.toFixed(0)}%`}`}
+                    className="flex items-center gap-0.5"
+                  >
+                    <CpuIcon aria-hidden="true" className="size-3" />
+                    {hostCpu === null ? "—" : `${hostCpu.toFixed(0)}%`}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span
+                    aria-label={`Memory ${memoryPercent === null ? "unavailable" : `${memoryPercent.toFixed(0)}%`}`}
+                    className="flex items-center gap-0.5"
+                  >
+                    <MemoryStickIcon aria-hidden="true" className="size-3" />
+                    {memoryPercent === null ? "—" : `${memoryPercent.toFixed(0)}%`}
+                  </span>
                 </span>
               ) : null}
             </SidebarMenuButton>
