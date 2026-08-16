@@ -1,7 +1,7 @@
 import { EventId, type OrchestrationThreadActivity, type ThreadGoal } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveThreadGoal } from "./threadGoal.ts";
+import { deriveThreadGoal, resolveThreadGoal } from "./threadGoal.ts";
 
 const goal: ThreadGoal = {
   objective: "Finish the reconnect work",
@@ -48,5 +48,15 @@ describe("deriveThreadGoal", () => {
         activity("goal.updated", { goal: { ...goal, status: "unknown" } }, 2),
       ]),
     ).toEqual(goal);
+  });
+});
+
+describe("resolveThreadGoal", () => {
+  it("does not resurrect an activity-derived goal after an explicit clear", () => {
+    expect(resolveThreadGoal(null, [activity("goal.updated", { goal }, 1)])).toBeNull();
+  });
+
+  it("supports goal history from older server snapshots", () => {
+    expect(resolveThreadGoal(undefined, [activity("goal.updated", { goal }, 1)])).toEqual(goal);
   });
 });

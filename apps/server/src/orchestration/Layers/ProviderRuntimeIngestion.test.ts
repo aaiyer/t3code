@@ -3116,10 +3116,10 @@ describe("ProviderRuntimeIngestion", () => {
     thread = await waitForThread(
       harness.readModel,
       (entry) =>
-        entry.goal === undefined &&
+        entry.goal === null &&
         entry.activities.some((activity) => activity.kind === "goal.cleared"),
     );
-    expect(thread.goal).toBeUndefined();
+    expect(thread.goal).toBeNull();
   });
 
   it("projects Codex camelCase token usage payloads into normalized thread activities", async () => {

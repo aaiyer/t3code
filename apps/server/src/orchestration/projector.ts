@@ -314,7 +314,7 @@ export function projectEvent(
             activities: [],
             checkpoints: [],
             session: null,
-            goal: undefined,
+            goal: null,
           },
           event.type,
           "thread",
@@ -539,7 +539,7 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            goal: undefined,
+            goal: null,
             updatedAt: event.occurredAt,
           }),
         })),

@@ -144,7 +144,7 @@ describe("applyThreadDetailEvent", () => {
 
       expect(cleared.kind).toBe("updated");
       if (cleared.kind !== "updated") return;
-      expect(cleared.thread.goal).toBeUndefined();
+      expect(cleared.thread.goal).toBeNull();
       expect(cleared.thread.updatedAt).toBe(clearedAt);
     });
   });
