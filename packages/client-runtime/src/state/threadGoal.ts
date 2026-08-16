@@ -30,3 +30,11 @@ export function deriveThreadGoal(
   }
   return null;
 }
+
+/** Prefer persisted goal state, falling back only for older server snapshots. */
+export function resolveThreadGoal(
+  goal: ThreadGoalValue | null | undefined,
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ThreadGoalValue | null {
+  return goal === undefined ? deriveThreadGoal(activities) : goal;
+}

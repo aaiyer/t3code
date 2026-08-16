@@ -100,7 +100,7 @@ export function applyThreadDetailEvent(
           activities: [],
           checkpoints: [],
           session: null,
-          goal: undefined,
+          goal: null,
         },
       };
 
@@ -269,7 +269,7 @@ export function applyThreadDetailEvent(
         kind: "updated",
         thread: {
           ...thread,
-          goal: undefined,
+          goal: null,
           updatedAt: event.occurredAt,
         },
       };

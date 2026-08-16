@@ -439,7 +439,9 @@ export const OrchestrationThread = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
-  goal: Schema.optional(ThreadGoal),
+  // `null` is an explicit cleared state. Absence remains reserved for
+  // snapshots from servers that predate persisted native goals.
+  goal: Schema.optional(Schema.NullOr(ThreadGoal)),
 });
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
@@ -491,7 +493,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   session: Schema.NullOr(OrchestrationSession),
-  goal: Schema.optional(ThreadGoal),
+  goal: Schema.optional(Schema.NullOr(ThreadGoal)),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,

@@ -72,7 +72,7 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
-import { deriveThreadGoal } from "@t3tools/client-runtime/state/threads";
+import { resolveThreadGoal } from "@t3tools/client-runtime/state/threads";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
@@ -1542,7 +1542,7 @@ function ChatViewContent(props: ChatViewProps) {
   const isServerThread = activeServerThread !== null;
   const activeThread = activeServerThread ?? localDraftThread;
   const activeGoal = useMemo<ThreadGoal | null>(
-    () => (activeThread ? (activeThread.goal ?? deriveThreadGoal(activeThread.activities)) : null),
+    () => (activeThread ? resolveThreadGoal(activeThread.goal, activeThread.activities) : null),
     [activeThread],
   );
   const [isGoalMutationPending, setIsGoalMutationPending] = useState(false);
