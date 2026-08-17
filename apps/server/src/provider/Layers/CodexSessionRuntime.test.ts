@@ -21,6 +21,7 @@ import {
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
+  setCodexThreadGoal,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
@@ -618,6 +619,53 @@ describe("openCodexThread", () => {
 
       NodeAssert.ok(isCodexAppServerRequestError(error));
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
+    }),
+  );
+});
+
+describe("setCodexThreadGoal", () => {
+  it.effect("turns the authoritative response into an updated notification", () =>
+    Effect.gen(function* () {
+      const calls: Array<{
+        method: "thread/goal/set";
+        payload: CodexRpc.ClientRequestParamsByMethod["thread/goal/set"];
+      }> = [];
+      const goal = {
+        threadId: "provider-thread-1",
+        objective: "Ship the fix",
+        status: "active" as const,
+        tokenBudget: 50_000,
+        tokensUsed: 4_000,
+        timeUsedSeconds: 120,
+        createdAt: 1_776_470_400,
+        updatedAt: 1_776_470_520,
+      };
+      const client = {
+        request: (
+          method: "thread/goal/set",
+          payload: CodexRpc.ClientRequestParamsByMethod["thread/goal/set"],
+        ) => {
+          calls.push({ method, payload });
+          return Effect.succeed({ goal });
+        },
+      };
+
+      const updated = yield* setCodexThreadGoal({
+        client,
+        providerThreadId: "provider-thread-1",
+        goal: { status: "active" },
+      });
+
+      NodeAssert.deepStrictEqual(calls, [
+        {
+          method: "thread/goal/set",
+          payload: { threadId: "provider-thread-1", status: "active" },
+        },
+      ]);
+      NodeAssert.deepStrictEqual(updated, {
+        method: "thread/goal/updated",
+        payload: { threadId: "provider-thread-1", goal },
+      });
     }),
   );
 });
