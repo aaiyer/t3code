@@ -3511,7 +3511,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isPreparingWorktree={isPreparingWorktree}
                   hasSendableContent={composerSendState.hasSendableContent}
                   preserveComposerFocusOnPointerDown={isMobileViewport}
-                  showSendWhileRunning={isMobileViewport}
+                  showSendWhileRunning
                   onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                   onInterrupt={handleInterruptPrimaryAction}
                   onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
