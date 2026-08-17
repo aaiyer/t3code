@@ -66,6 +66,11 @@ synchronization.
 3. [`CheckpointReactor`][checkpoint] captures workspace checkpoints on turn start and completion, and
    performs reverts.
 
+Both `turn.completed` and `turn.aborted` are terminal provider events. Runtime ingestion settles the
+thread session and clears its active turn for either event. An abort also publishes any buffered
+assistant text already received, but discards an incomplete buffered proposed plan. A late terminal
+event for an older turn cannot settle a newer active turn.
+
 ### Buffered assistant delivery
 
 A thread in `buffered` assistant delivery mode accumulates assistant text instead of streaming each
