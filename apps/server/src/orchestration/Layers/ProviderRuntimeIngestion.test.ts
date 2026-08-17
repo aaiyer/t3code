@@ -373,6 +373,95 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
+  it("settles an aborted turn, publishes buffered text, and rejects its late completion", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const interruptedTurnId = asTurnId("turn-interrupted");
+    const nextTurnId = asTurnId("turn-after-interrupt");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-before-interrupt"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: interruptedTurnId,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" && thread.session.activeTurnId === interruptedTurnId,
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-before-interrupt"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: interruptedTurnId,
+      itemId: asItemId("item-before-interrupt"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "work preserved before interruption",
+      },
+    });
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-aborted"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: interruptedTurnId,
+      payload: { reason: "interrupted by user" },
+    });
+
+    const settledThread = await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "ready" &&
+        thread.session.activeTurnId === null &&
+        thread.messages.some(
+          (message) =>
+            message.id === "assistant:item-before-interrupt" &&
+            message.text === "work preserved before interruption" &&
+            !message.streaming,
+        ),
+    );
+    expect(settledThread.session?.lastError).toBeNull();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-after-interrupt"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: nextTurnId,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" && thread.session.activeTurnId === nextTurnId,
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-late-completion-after-interrupt"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: interruptedTurnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    const afterLateCompletion = (await harness.readModel()).threads.find(
+      (thread) => thread.id === asThreadId("thread-1"),
+    );
+    expect(afterLateCompletion?.session?.status).toBe("running");
+    expect(afterLateCompletion?.session?.activeTurnId).toBe(nextTurnId);
+  });
+
   it("applies provider session.state.changed transitions directly", async () => {
     const harness = await createHarness();
     const waitingAt = "2026-01-01T00:00:00.000Z";
