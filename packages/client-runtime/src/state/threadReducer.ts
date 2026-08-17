@@ -452,6 +452,11 @@ export function applyThreadDetailEvent(
           ...thread,
           session: event.payload.session,
           latestTurn,
+          ...((event.payload.session.status === "running" ||
+            event.payload.session.status === "starting") &&
+          (thread.lastAgentActivityAt ?? "") < event.occurredAt
+            ? { lastAgentActivityAt: event.occurredAt }
+            : {}),
           updatedAt: event.occurredAt,
         },
       };
@@ -591,6 +596,15 @@ export function applyThreadDetailEvent(
     }
 
     // ── Activities ──────────────────────────────────────────────────
+    case "thread.agent-activity-recorded":
+      if ((thread.lastAgentActivityAt ?? "") >= event.occurredAt) {
+        return { kind: "unchanged" };
+      }
+      return {
+        kind: "updated",
+        thread: { ...thread, lastAgentActivityAt: event.occurredAt },
+      };
+
     case "thread.activity-appended": {
       const activity = event.payload.activity;
       // A resolvable context-window update supersedes earlier resolvable ones

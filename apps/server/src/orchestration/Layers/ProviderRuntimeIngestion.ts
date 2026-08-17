@@ -48,6 +48,7 @@ import { canReplaceThreadTitle } from "../threadTitles.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
+const RUNTIME_HEARTBEAT_ACTIVITY_INTERVAL_MS = 5_000;
 
 // Fallback when the in-memory description cache no longer has the task name
 // (server restart, session-exit sweep, TTL/capacity eviction): earlier
@@ -928,6 +929,7 @@ const make = Effect.gen(function* () {
     crypto.randomUUIDv4.pipe(
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
     );
+  const lastRuntimeHeartbeatAtByThreadId = new Map<string, number>();
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -1525,6 +1527,37 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
+
+      // Parent-conversation tool progress is a runtime heartbeat, not a
+      // timeline activity. Persist a lightweight activity clock event so
+      // remote clients can tell the provider is still alive while a long tool
+      // call is otherwise silent. Agent-owned progress already becomes a
+      // task activity below. Bound writes to the UI's five-second cadence.
+      if (event.type === "tool.progress" && event.payload.taskId === undefined) {
+        const heartbeatAt = Date.parse(event.createdAt);
+        const previousHeartbeatAt = lastRuntimeHeartbeatAtByThreadId.get(thread.id);
+        if (
+          Number.isFinite(heartbeatAt) &&
+          (previousHeartbeatAt === undefined ||
+            heartbeatAt - previousHeartbeatAt >= RUNTIME_HEARTBEAT_ACTIVITY_INTERVAL_MS)
+        ) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.agent-activity.record",
+            commandId: yield* providerCommandId(event, "thread-agent-activity-record"),
+            threadId: thread.id,
+            createdAt: event.createdAt,
+          });
+          lastRuntimeHeartbeatAtByThreadId.set(thread.id, heartbeatAt);
+        }
+      }
+
+      if (
+        event.type === "session.exited" ||
+        (event.type === "session.state.changed" &&
+          (event.payload.state === "stopped" || event.payload.state === "error"))
+      ) {
+        lastRuntimeHeartbeatAtByThreadId.delete(thread.id);
+      }
 
       let loadedThreadDetail: OrchestrationThread | null | undefined;
       const getLoadedThreadDetail = () =>

@@ -567,6 +567,7 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.session?.status).toBe("running");
         expect(result.thread.latestTurn?.turnId).toBe("turn-1");
         expect(result.thread.latestTurn?.state).toBe("running");
+        expect(result.thread.lastAgentActivityAt).toBe("2026-04-01T08:00:00.000Z");
       }
     });
   });
@@ -650,6 +651,27 @@ describe("applyThreadDetailEvent", () => {
       if (result.kind === "updated") {
         expect(result.thread.proposedPlans).toHaveLength(1);
         expect(result.thread.proposedPlans[0]?.id).toBe("plan-1");
+      }
+    });
+  });
+
+  describe("thread.agent-activity-recorded", () => {
+    it("advances the live activity clock without changing thread ordering", () => {
+      const result = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 12,
+        occurredAt: "2026-04-01T11:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.agent-activity-recorded",
+        payload: { threadId: ThreadId.make("thread-1") },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.lastAgentActivityAt).toBe("2026-04-01T11:00:00.000Z");
+        expect(result.thread.updatedAt).toBe(baseThread.updatedAt);
+        expect(result.thread.activities).toEqual([]);
       }
     });
   });

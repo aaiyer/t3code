@@ -15,6 +15,7 @@ import {
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
+  ThreadAgentActivityRecordedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
   ThreadDeletedPayload,
@@ -633,6 +634,10 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             session,
+            ...((session.status === "running" || session.status === "starting") &&
+            (thread.lastAgentActivityAt ?? "") < event.occurredAt
+              ? { lastAgentActivityAt: event.occurredAt }
+              : {}),
             latestTurn:
               session.status === "running" && session.activeTurnId !== null
                 ? {
@@ -852,6 +857,27 @@ export function projectEvent(
             threads: updateThread(nextBase.threads, payload.threadId, {
               activities,
               updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.agent-activity-recorded":
+      return decodeForEvent(
+        ThreadAgentActivityRecordedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread || (thread.lastAgentActivityAt ?? "") >= event.occurredAt) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              lastAgentActivityAt: event.occurredAt,
             }),
           };
         }),
