@@ -16,6 +16,7 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
+  formatThreadListV2WorkingLabel,
   resolveThreadListV2Enabled,
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozeGateExpiryMs,
@@ -53,6 +54,21 @@ function makeThread(
 }
 
 const NOW = "2026-06-02T00:00:00.000Z";
+
+describe("formatThreadListV2WorkingLabel", () => {
+  it("includes the last agent activity when available", () => {
+    expect(
+      formatThreadListV2WorkingLabel(
+        "2026-06-01T23:58:00.000Z",
+        Date.parse("2026-06-02T00:00:00.000Z"),
+      ),
+    ).toBe("Working · last 2m ago");
+  });
+
+  it("keeps the legacy label for older servers", () => {
+    expect(formatThreadListV2WorkingLabel(undefined, Date.parse(NOW))).toBe("Working");
+  });
+});
 
 describe("resolveThreadListV2SnoozeMenuSelection", () => {
   it("accepts a displayed evening preset while its wake time is still future", () => {

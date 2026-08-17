@@ -56,6 +56,9 @@ export function mergeEnvironmentThread(
     latestTurn: shell.latestTurn,
     createdAt: shell.createdAt,
     updatedAt: shell.updatedAt,
+    ...(shell.lastAgentActivityAt !== undefined
+      ? { lastAgentActivityAt: shell.lastAgentActivityAt }
+      : {}),
     archivedAt: shell.archivedAt,
     settledOverride: shell.settledOverride,
     settledAt: shell.settledAt,

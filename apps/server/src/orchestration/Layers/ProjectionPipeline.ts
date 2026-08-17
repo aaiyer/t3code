@@ -842,12 +842,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       ]);
 
       let latestUserMessageAt: string | null = null;
+      let lastAgentActivityAt = existingRow.value.lastAgentActivityAt ?? null;
       for (const message of messages) {
         if (
           message.role === "user" &&
           (latestUserMessageAt === null || message.createdAt > latestUserMessageAt)
         ) {
           latestUserMessageAt = message.createdAt;
+        }
+        if (
+          message.role === "assistant" &&
+          (lastAgentActivityAt === null || message.updatedAt > lastAgentActivityAt)
+        ) {
+          lastAgentActivityAt = message.updatedAt;
+        }
+      }
+      for (const activity of activities) {
+        if (lastAgentActivityAt === null || activity.createdAt > lastAgentActivityAt) {
+          lastAgentActivityAt = activity.createdAt;
         }
       }
 
@@ -863,6 +875,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       yield* projectionThreadRepository.upsert({
         ...existingRow.value,
         latestUserMessageAt,
+        lastAgentActivityAt,
         pendingApprovalCount,
         pendingUserInputCount,
         hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
@@ -896,6 +909,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
+            lastAgentActivityAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
             hasActionableProposedPlan: 0,
@@ -1183,6 +1197,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             // activeTurnId describes current work; a terminal session must not erase history.
             latestTurnId: event.payload.session.activeTurnId ?? existingRow.value.latestTurnId,
+            ...(event.payload.session.status === "running" ||
+            event.payload.session.status === "starting"
+              ? { lastAgentActivityAt: event.occurredAt }
+              : {}),
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);

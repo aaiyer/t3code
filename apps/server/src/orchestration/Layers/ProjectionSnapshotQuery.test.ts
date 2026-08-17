@@ -457,6 +457,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           goal: null,
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
+          lastAgentActivityAt: null,
           hasPendingApprovals: true,
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,

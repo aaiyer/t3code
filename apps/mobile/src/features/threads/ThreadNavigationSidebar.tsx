@@ -937,6 +937,7 @@ function ThreadNavigationSidebarPane(
               snoozed={item.item.snoozed}
               pinned={item.item.pinned}
               snoozePresetMinute={nowMinute}
+              workingActivityNow={`${nowMinute}:00.000Z`}
               snoozeWakeLabelText={item.snoozeWakeLabelText}
               project={projectByKey.get(scopeKey) ?? null}
               projectTitle={projectTitleByProjectKey.get(scopeKey)}

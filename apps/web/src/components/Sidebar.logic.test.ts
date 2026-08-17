@@ -25,6 +25,7 @@ import {
   resolveWorkingStartedAt,
   searchSidebarThreadsByTitle,
   formatWorkingDurationLabel,
+  formatWorkingTimingLabel,
   shouldNavigateAfterProjectRemoval,
   runStableProjectRemovalConfirmation,
   shouldClearThreadSelectionOnMouseDown,
@@ -1136,6 +1137,28 @@ describe("formatWorkingDurationLabel", () => {
   it("clamps negative and non-finite elapsed values to zero", () => {
     expect(formatWorkingDurationLabel(-5_000)).toBe("0s");
     expect(formatWorkingDurationLabel(Number.NaN)).toBe("0s");
+  });
+});
+
+describe("formatWorkingTimingLabel", () => {
+  it("shows both total working time and the last agent activity", () => {
+    expect(
+      formatWorkingTimingLabel({
+        startedAt: "2026-08-17T02:55:00.000Z",
+        lastAgentActivityAt: "2026-08-17T02:59:48.000Z",
+        nowMs: Date.parse("2026-08-17T03:00:00.000Z"),
+      }),
+    ).toBe("5m · last 12s ago");
+  });
+
+  it("keeps the duration when activity is unavailable from an older server", () => {
+    expect(
+      formatWorkingTimingLabel({
+        startedAt: "2026-08-17T02:59:18.000Z",
+        lastAgentActivityAt: undefined,
+        nowMs: Date.parse("2026-08-17T03:00:00.000Z"),
+      }),
+    ).toBe("42s");
   });
 });
 

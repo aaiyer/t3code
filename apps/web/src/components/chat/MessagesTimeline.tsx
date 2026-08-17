@@ -15,6 +15,7 @@ import {
 const EMPTY_AGENT_PANEL_MODEL = emptyAgentPanelModel();
 const NOOP_OPEN_AGENTS = () => {};
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
+import { formatLastActivityAge } from "@t3tools/shared/workingActivity";
 import {
   createContext,
   Fragment,
@@ -167,6 +168,7 @@ interface TimelineRowActivityState {
   latestTurnId: TurnId | null;
   /** Current plan step label for the working row, when the turn has a plan. */
   workingStepLabel: string | null;
+  lastAgentActivityAt: string | null | undefined;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -222,6 +224,7 @@ interface MessagesTimelineProps {
   workingStepLabel?: string | null;
   activeTurnInProgress: boolean;
   activeTurnStartedAt: string | null;
+  lastAgentActivityAt?: string | null | undefined;
   listRef: React.RefObject<LegendListRef | null>;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   latestTurn: TimelineLatestTurn | null;
@@ -266,6 +269,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   workingStepLabel = null,
   activeTurnInProgress,
   activeTurnStartedAt,
+  lastAgentActivityAt = null,
   agentPanelModel = EMPTY_AGENT_PANEL_MODEL,
   onOpenAgents = NOOP_OPEN_AGENTS,
   listRef,
@@ -556,8 +560,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnInProgress,
       latestTurnId: latestTurn?.turnId ?? null,
       workingStepLabel,
+      lastAgentActivityAt,
     }),
-    [activeTurnInProgress, isRevertingCheckpoint, isWorking, latestTurn?.turnId, workingStepLabel],
+    [
+      activeTurnInProgress,
+      isRevertingCheckpoint,
+      isWorking,
+      lastAgentActivityAt,
+      latestTurn?.turnId,
+      workingStepLabel,
+    ],
   );
 
   // Stable renderItem — no closure deps. Row components read shared state
@@ -1293,7 +1305,7 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
 });
 
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { workingStepLabel } = use(TimelineRowActivityCtx);
+  const { lastAgentActivityAt, workingStepLabel } = use(TimelineRowActivityCtx);
   return (
     <div className="py-0.5 pl-1.5">
       <div className="flex min-w-0 items-center gap-2 pt-1 text-secondary-label text-[11px] tabular-nums">
@@ -1305,7 +1317,8 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
         <span className="shrink-0">
           {row.createdAt ? (
             <>
-              Working for <WorkingTimer createdAt={row.createdAt} />
+              Working for{" "}
+              <WorkingTimer createdAt={row.createdAt} lastAgentActivityAt={lastAgentActivityAt} />
             </>
           ) : (
             "Working..."
@@ -1325,20 +1338,26 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
 // ---------------------------------------------------------------------------
 
 /** Live "Working for Xs" label. */
-function WorkingTimer({ createdAt }: { createdAt: string }) {
+function WorkingTimer({
+  createdAt,
+  lastAgentActivityAt,
+}: {
+  createdAt: string;
+  lastAgentActivityAt: string | null | undefined;
+}) {
   const textRef = useRef<HTMLSpanElement>(null);
-  const initialText = formatWorkingTimerNow(createdAt);
+  const initialText = formatWorkingTimerNow(createdAt, lastAgentActivityAt);
 
   useEffect(() => {
     const updateText = () => {
       if (textRef.current) {
-        textRef.current.textContent = formatWorkingTimerNow(createdAt);
+        textRef.current.textContent = formatWorkingTimerNow(createdAt, lastAgentActivityAt);
       }
     };
     updateText();
     const id = setInterval(updateText, 1000);
     return () => clearInterval(id);
-  }, [createdAt]);
+  }, [createdAt, lastAgentActivityAt]);
 
   return (
     <span ref={textRef} className="tabular-nums">
@@ -1952,8 +1971,14 @@ function formatWorkingTimer(startIso: string, endIso: string): string | null {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-function formatWorkingTimerNow(startIso: string): string {
-  return formatWorkingTimer(startIso, new Date().toISOString()) ?? "0s";
+function formatWorkingTimerNow(
+  startIso: string,
+  lastAgentActivityAt: string | null | undefined,
+): string {
+  const now = new Date();
+  const duration = formatWorkingTimer(startIso, now.toISOString()) ?? "0s";
+  const activityAge = formatLastActivityAge(lastAgentActivityAt, now.getTime());
+  return activityAge === null ? duration : `${duration} · Last activity ${activityAge}`;
 }
 
 type WorkEntryIconName =
