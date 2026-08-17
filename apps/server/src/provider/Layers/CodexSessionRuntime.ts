@@ -460,6 +460,38 @@ interface CodexThreadOpenClient {
   ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
 }
 
+interface CodexThreadGoalSetClient {
+  readonly request: (
+    method: "thread/goal/set",
+    payload: CodexRpc.ClientRequestParamsByMethod["thread/goal/set"],
+  ) => Effect.Effect<
+    CodexRpc.ClientRequestResponsesByMethod["thread/goal/set"],
+    CodexErrors.CodexAppServerError
+  >;
+}
+
+export const setCodexThreadGoal = (input: {
+  readonly client: CodexThreadGoalSetClient;
+  readonly providerThreadId: string;
+  readonly goal: Omit<ProviderSetThreadGoalInput, "threadId">;
+}) =>
+  input.client
+    .request("thread/goal/set", {
+      threadId: input.providerThreadId,
+      ...(input.goal.objective !== undefined ? { objective: input.goal.objective } : {}),
+      ...(input.goal.status !== undefined ? { status: input.goal.status } : {}),
+      ...(input.goal.tokenBudget !== undefined ? { tokenBudget: input.goal.tokenBudget } : {}),
+    })
+    .pipe(
+      Effect.map((response) => ({
+        method: "thread/goal/updated" as const,
+        payload: {
+          threadId: input.providerThreadId,
+          goal: response.goal,
+        } satisfies EffectCodexSchema.V2ThreadGoalUpdatedNotification,
+      })),
+    );
+
 export const openCodexThread = (input: {
   readonly client: CodexThreadOpenClient;
   readonly threadId: ThreadId;
@@ -2115,11 +2147,15 @@ export const makeCodexSessionRuntime = (
       setThreadGoal: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
-          yield* client.request("thread/goal/set", {
-            threadId: providerThreadId,
-            ...(input.objective !== undefined ? { objective: input.objective } : {}),
-            ...(input.status !== undefined ? { status: input.status } : {}),
-            ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+          const updated = yield* setCodexThreadGoal({
+            client,
+            providerThreadId,
+            goal: input,
+          });
+          yield* emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            ...updated,
           });
         }),
       clearThreadGoal: Effect.gen(function* () {
