@@ -1372,34 +1372,46 @@ const makeWsRpcLayer = (
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
                 const headSequence = yield* orchestrationEngine.latestSequence;
-                const replayGap = headSequence - afterSequence;
-                if (replayGap >= 0 && replayGap <= THREAD_RESUME_MAX_GAP) {
-                  const catchUpStream = orchestrationEngine
-                    .readEvents(afterSequence, replayGap)
-                    .pipe(
+                if (afterSequence <= headSequence) {
+                  const catchUpEvents = yield* Stream.runCollect(
+                    orchestrationEngine.readAggregateEvents(
+                      "thread",
+                      input.threadId,
+                      afterSequence,
+                      THREAD_RESUME_MAX_GAP + 1,
+                    ),
+                  ).pipe(
+                    Effect.map((events) => Array.from(events)),
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: `Failed to replay thread ${input.threadId} events`,
+                          cause,
+                        }),
+                    ),
+                  );
+                  if (catchUpEvents.length > THREAD_RESUME_MAX_GAP) {
+                    // This thread alone has too much history after the cursor;
+                    // use the bounded snapshot path below.
+                  } else {
+                    const catchUpStream = Stream.fromIterable(catchUpEvents).pipe(
                       Stream.filter(isThisThreadDetailEvent),
                       Stream.map((event) => ({
                         kind: "event" as const,
                         event: projectActivityEvent(event),
                       })),
-                      Stream.mapError(
-                        (cause) =>
-                          new OrchestrationGetSnapshotError({
-                            message: `Failed to replay thread ${input.threadId} events`,
-                            cause,
-                          }),
-                      ),
                     );
-                  const afterCatchUp =
-                    input.requestCompletionMarker === true
-                      ? Stream.concat(
-                          Stream.fromEffect(
-                            Queue.offer(liveBuffer, { kind: "synchronized" as const }),
-                          ).pipe(Stream.drain),
-                          bufferedLiveStream,
-                        )
-                      : bufferedLiveStream;
-                  return Stream.concat(catchUpStream, afterCatchUp);
+                    const afterCatchUp =
+                      input.requestCompletionMarker === true
+                        ? Stream.concat(
+                            Stream.fromEffect(
+                              Queue.offer(liveBuffer, { kind: "synchronized" as const }),
+                            ).pipe(Stream.drain),
+                            bufferedLiveStream,
+                          )
+                        : bufferedLiveStream;
+                    return Stream.concat(catchUpStream, afterCatchUp);
+                  }
                 }
                 // Gap too large (or cursor ahead of authoritative state): fall
                 // through to the snapshot path so the client converges from a

@@ -772,6 +772,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
           readEvents: () => Stream.empty,
+          readAggregateEvents: () => Stream.empty,
           dispatch: () => Effect.succeed({ sequence: 0 }),
           streamDomainEvents: Stream.empty,
           latestSequence: Effect.succeed(0),
@@ -6166,10 +6167,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
-  it.effect("subscribeThread sends a fresh snapshot instead of replaying a large gap", () =>
+  it.effect("subscribeThread ignores unrelated global replay gaps", () =>
     Effect.gen(function* () {
       let readEventsCalls = 0;
-      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      let readAggregateEventsCalls = 0;
 
       yield* buildAppUnderTest({
         layers: {
@@ -6181,34 +6182,28 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 readEventsCalls += 1;
                 return {} as OrchestrationEvent;
               }),
-          },
-          projectionSnapshotQuery: {
-            getThreadDetailSnapshot: () =>
-              Effect.succeed(Option.some({ snapshotSequence: 100_000, thread })),
+            readAggregateEvents: () => {
+              readAggregateEventsCalls += 1;
+              return Stream.empty;
+            },
           },
         },
       });
 
       const wsUrl = yield* getWsServerUrl("/ws");
-      const items = yield* Effect.scoped(
+      const first = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
             afterSequence: 5,
             requestCompletionMarker: true,
-          }).pipe(Stream.take(2), Stream.runCollect),
+          }).pipe(Stream.runHead),
         ),
       );
 
-      const [first, second] = Array.from(items);
-      // Large gap => fresh thread snapshot, and the global replay never starts.
-      assert.equal(first?.kind, "snapshot");
-      if (first?.kind === "snapshot") {
-        assert.equal(first.snapshot.thread.id, defaultThreadId);
-        assert.equal(first.snapshot.snapshotSequence, 100_000);
-      }
-      assert.equal(second?.kind, "synchronized");
+      assert.deepEqual(Option.getOrThrow(first), { kind: "synchronized" });
       assert.equal(readEventsCalls, 0);
+      assert.equal(readAggregateEventsCalls, 1);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -6249,9 +6244,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("subscribeThread bounds catch-up replay to the captured head", () =>
+  it.effect("subscribeThread bounds catch-up replay on the thread aggregate", () =>
     Effect.gen(function* () {
       let replayLimit: number | undefined;
+      let replayAggregateKind: string | undefined;
+      let replayAggregateId: string | undefined;
+      let replayAfterSequence: number | undefined;
       const now = "2026-01-01T00:00:00.000Z";
       const messageEvent = {
         sequence: 3,
@@ -6280,7 +6278,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           orchestrationEngine: {
             latestSequence: Effect.succeed(50),
-            readEvents: (_afterSequence, limit) => {
+            readAggregateEvents: (aggregateKind, aggregateId, afterSequence, limit) => {
+              replayAggregateKind = aggregateKind;
+              replayAggregateId = aggregateId;
+              replayAfterSequence = afterSequence;
               replayLimit = limit;
               return Stream.make(messageEvent);
             },
@@ -6303,10 +6304,71 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(first?.kind, "event");
       assert.equal(first?.kind === "event" ? first.event.sequence : null, 3);
       assert.equal(second?.kind, "synchronized");
-      // The replay is bounded to the head captured before the read, not
-      // Number.MAX_SAFE_INTEGER.
-      assert.equal(replayLimit, 50);
+      assert.equal(replayAggregateKind, "thread");
+      assert.equal(replayAggregateId, defaultThreadId);
+      assert.equal(replayAfterSequence, 0);
+      assert.equal(replayLimit, 1_001);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "subscribeThread falls back to a snapshot when its aggregate replay exceeds the cap",
+    () =>
+      Effect.gen(function* () {
+        const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+        const now = "2026-01-01T00:00:00.000Z";
+        const replayEvents = Array.from({ length: 1_001 }, (_, index) => ({
+          sequence: index + 1,
+          eventId: EventId.make(`event-replay-${index + 1}`),
+          aggregateKind: "thread" as const,
+          aggregateId: defaultThreadId,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent" as const,
+          payload: {
+            threadId: defaultThreadId,
+            messageId: MessageId.make(`message-replay-${index + 1}`),
+            role: "user" as const,
+            text: "Replayed message",
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }));
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              latestSequence: Effect.succeed(1_001),
+              readAggregateEvents: () => Stream.fromIterable(replayEvents),
+            },
+            projectionSnapshotQuery: {
+              getThreadDetailSnapshot: () =>
+                Effect.succeed(Option.some({ snapshotSequence: 1_001, thread })),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+              threadId: defaultThreadId,
+              afterSequence: 0,
+              requestCompletionMarker: true,
+            }).pipe(Stream.take(2), Stream.runCollect),
+          ),
+        );
+
+        const [first, second] = Array.from(items);
+        assert.equal(first?.kind, "snapshot");
+        assert.equal(first?.kind === "snapshot" ? first.snapshot.snapshotSequence : null, 1_001);
+        assert.equal(second?.kind, "synchronized");
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeShell sends a fresh snapshot instead of replaying a large gap", () =>

@@ -195,6 +195,20 @@ function derivePendingUserInputCountFromActivities(
   return openRequestIds.size;
 }
 
+// Activity kinds that can change the shell summary's pending-approval or
+// pending-user-input counters. All other activity kinds (command output,
+// file edits, streaming progress, ...) leave the summary untouched, so they
+// must not trigger the history-wide summary rebuild — and the shell stream
+// (ws.ts toShellStreamEvent) skips re-broadcasting the thread row for them.
+export const SHELL_SUMMARY_ACTIVITY_KINDS: ReadonlySet<string> = new Set([
+  "approval.requested",
+  "approval.resolved",
+  "provider.approval.respond.failed",
+  "user-input.requested",
+  "user-input.resolved",
+  "provider.user-input.respond.failed",
+]);
+
 function deriveHasActionableProposedPlan(input: {
   readonly latestTurnId: string | null;
   readonly proposedPlans: ReadonlyArray<ProjectionThreadProposedPlan>;
@@ -1167,9 +1181,82 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
-        case "thread.message-sent":
+        case "thread.message-sent": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          // A message can only move latestUserMessageAt forward; the other
+          // summary fields depend on activities/plans/approvals, which this
+          // event cannot touch. Update incrementally instead of re-reading the
+          // whole message/plan/activity/approval history per (streamed) chunk.
+          const latestUserMessageAt =
+            event.payload.role === "user" &&
+            (existingRow.value.latestUserMessageAt === null ||
+              event.payload.createdAt > existingRow.value.latestUserMessageAt)
+              ? event.payload.createdAt
+              : existingRow.value.latestUserMessageAt;
+          const lastAgentActivityAt =
+            event.payload.role === "assistant" &&
+            (existingRow.value.lastAgentActivityAt === null ||
+              existingRow.value.lastAgentActivityAt === undefined ||
+              event.payload.updatedAt > existingRow.value.lastAgentActivityAt)
+              ? event.payload.updatedAt
+              : (existingRow.value.lastAgentActivityAt ?? null);
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            latestUserMessageAt,
+            lastAgentActivityAt,
+            // Streaming assistant chunks arrive many times per second and
+            // change no shell-visible field; leaving updatedAt untouched lets
+            // the shell stream skip per-chunk upsert fan-out (toShellStreamEvent).
+            updatedAt:
+              event.payload.streaming && event.payload.role === "assistant"
+                ? existingRow.value.updatedAt
+                : event.occurredAt,
+          });
+          return;
+        }
+
+        case "thread.activity-appended": {
+          if (!SHELL_SUMMARY_ACTIVITY_KINDS.has(event.payload.activity.kind)) {
+            const existingRow = yield* projectionThreadRepository.getById({
+              threadId: event.payload.threadId,
+            });
+            if (
+              Option.isNone(existingRow) ||
+              (existingRow.value.lastAgentActivityAt !== null &&
+                existingRow.value.lastAgentActivityAt !== undefined &&
+                existingRow.value.lastAgentActivityAt >= event.payload.activity.createdAt)
+            ) {
+              return;
+            }
+            // Preserve the newer activity clock without rebuilding message,
+            // plan, activity, and approval history. updatedAt stays stable so
+            // tool chatter does not reorder the sidebar.
+            yield* projectionThreadRepository.upsert({
+              ...existingRow.value,
+              lastAgentActivityAt: event.payload.activity.createdAt,
+            });
+            return;
+          }
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            updatedAt: event.occurredAt,
+          });
+          yield* refreshThreadShellSummary(event.payload.threadId);
+          return;
+        }
+
         case "thread.proposed-plan-upserted":
-        case "thread.activity-appended":
         case "thread.approval-response-requested":
         case "thread.user-input-response-requested": {
           const existingRow = yield* projectionThreadRepository.getById({
