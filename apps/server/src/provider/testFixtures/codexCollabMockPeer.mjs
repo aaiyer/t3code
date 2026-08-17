@@ -73,6 +73,21 @@ rl.on("line", (line) => {
     }
     return;
   }
+  if (method === "turn/steer") {
+    const expectedTurnId = script.expectedActiveTurnId ?? message.params?.expectedTurnId;
+    if (message.params?.expectedTurnId !== expectedTurnId) {
+      write({
+        id,
+        error: {
+          code: -32000,
+          message: `expected active turn id ${message.params?.expectedTurnId} but found ${expectedTurnId}`,
+        },
+      });
+      return;
+    }
+    write({ id, result: { turnId: expectedTurnId } });
+    return;
+  }
   if (method === "turn/interrupt") {
     // Record which thread/turn was interrupted (append-only sidecar file the
     // test reads) so Stop coverage can assert every live child was reached.
