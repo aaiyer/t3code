@@ -4,7 +4,7 @@ import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe } from "vite-plus/test";
-import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
+import { DEFAULT_MODEL, ThreadId, TurnId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
@@ -16,12 +16,16 @@ import {
 } from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
+  buildTurnSteerParams,
   buildTurnStartParams,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
+  resolveCodexSteerReconciliation,
+  resolveCodexSteeringTurnId,
   setCodexThreadGoal,
+  shouldRetryCodexSteerAsStart,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
@@ -246,6 +250,57 @@ describe("buildTurnStartParams", () => {
         },
       ],
     });
+  });
+});
+
+describe("Codex turn steering", () => {
+  const activeTurnId = TurnId.make("turn-active");
+
+  it("targets the active turn with the submitted text and images", () => {
+    NodeAssert.deepEqual(
+      buildTurnSteerParams({
+        threadId: "provider-thread-1",
+        activeTurnId,
+        prompt: "Please change direction",
+        attachments: [{ type: "image", url: "data:image/png;base64,abc" }],
+      }),
+      {
+        threadId: "provider-thread-1",
+        expectedTurnId: "turn-active",
+        input: [
+          { type: "text", text: "Please change direction" },
+          { type: "image", url: "data:image/png;base64,abc" },
+        ],
+      },
+    );
+    NodeAssert.equal(resolveCodexSteeringTurnId({ status: "running", activeTurnId }), activeTurnId);
+  });
+
+  it("retries a rejected steer as a new turn only after the active turn settles", () => {
+    NodeAssert.equal(
+      shouldRetryCodexSteerAsStart({ status: "ready", activeTurnId: undefined }),
+      true,
+    );
+    NodeAssert.equal(shouldRetryCodexSteerAsStart({ status: "running", activeTurnId }), false);
+    NodeAssert.equal(
+      shouldRetryCodexSteerAsStart({ status: "error", activeTurnId: undefined }),
+      false,
+    );
+  });
+
+  it("reconciles a late steer acknowledgement with the settled session state", () => {
+    NodeAssert.equal(
+      resolveCodexSteerReconciliation({ status: "running", activeTurnId }, activeTurnId),
+      "running",
+    );
+    NodeAssert.equal(
+      resolveCodexSteerReconciliation({ status: "ready", activeTurnId: undefined }, activeTurnId),
+      "ready",
+    );
+    NodeAssert.equal(
+      resolveCodexSteerReconciliation({ status: "error", activeTurnId: undefined }, activeTurnId),
+      "error",
+    );
   });
 });
 
