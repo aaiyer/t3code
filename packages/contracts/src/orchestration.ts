@@ -409,6 +409,9 @@ export const OrchestrationThread = Schema.Struct({
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  // Last meaningful provider-originated update. Optional so cached details
+  // from older servers remain readable during rolling upgrades.
+  lastAgentActivityAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   settledOverride: Schema.NullOr(Schema.Literals(["settled", "active"])).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -495,6 +498,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   session: Schema.NullOr(OrchestrationSession),
   goal: Schema.optional(Schema.NullOr(ThreadGoal)),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
+  // Distinct from updatedAt, which also advances for metadata and user actions.
+  // Optional so older servers and persisted client caches remain compatible.
+  lastAgentActivityAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,

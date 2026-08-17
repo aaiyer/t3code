@@ -800,6 +800,7 @@ export function HomeScreen(props: HomeScreenProps) {
           snoozed={item.item.snoozed}
           pinned={item.item.pinned}
           snoozePresetMinute={nowMinute}
+          workingActivityNow={`${nowMinute}:00.000Z`}
           snoozeWakeLabelText={item.snoozeWakeLabelText}
           showTrailingDivider={showTrailingDivider}
           project={

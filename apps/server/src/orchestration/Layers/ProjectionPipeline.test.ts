@@ -402,6 +402,50 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         assert.equal(row.lastAppliedSequence, 3);
       }
 
+      const assistantActivityRows = yield* sql<{
+        readonly lastAgentActivityAt: string | null;
+      }>`
+        SELECT last_agent_activity_at AS "lastAgentActivityAt"
+        FROM projection_threads
+        WHERE thread_id = 'thread-1'
+      `;
+      assert.deepEqual(assistantActivityRows, [{ lastAgentActivityAt: now }]);
+
+      const toolActivityAt = "2026-01-01T00:00:00.500Z";
+      yield* eventStore.append({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-activity-1"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        occurredAt: toolActivityAt,
+        commandId: CommandId.make("cmd-activity-1"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-activity-1"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("provider-tool-1"),
+            tone: "tool",
+            kind: "tool.started",
+            summary: "Command started",
+            payload: {},
+            turnId: null,
+            createdAt: toolActivityAt,
+          },
+        },
+      });
+      yield* projectionPipeline.bootstrap;
+
+      const toolActivityRows = yield* sql<{
+        readonly lastAgentActivityAt: string | null;
+      }>`
+        SELECT last_agent_activity_at AS "lastAgentActivityAt"
+        FROM projection_threads
+        WHERE thread_id = 'thread-1'
+      `;
+      assert.deepEqual(toolActivityRows, [{ lastAgentActivityAt: toolActivityAt }]);
+
       // Settled lifecycle through the DB pipeline: thread.settled writes the
       // override + timestamp, thread.unsettled(user) flips to the active pin.
       yield* eventStore.append({

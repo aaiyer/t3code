@@ -14,6 +14,7 @@ import { isLatestTurnSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ProjectId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import { formatLastActivityAge } from "@t3tools/shared/workingActivity";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -724,6 +725,20 @@ export function formatWorkingDurationLabel(elapsedMs: number): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+export function formatWorkingTimingLabel(input: {
+  startedAt: string | null;
+  lastAgentActivityAt: string | null | undefined;
+  nowMs?: number;
+}): string {
+  const nowMs = input.nowMs ?? Date.now();
+  const startedMs = input.startedAt === null ? Number.NaN : Date.parse(input.startedAt);
+  const duration = Number.isNaN(startedMs) ? null : formatWorkingDurationLabel(nowMs - startedMs);
+  const activityAge = formatLastActivityAge(input.lastAgentActivityAt, nowMs);
+  return [duration, activityAge === null ? null : `last ${activityAge}`]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
 }
 
 export function resolveThreadStatusPill(input: {

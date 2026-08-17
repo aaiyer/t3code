@@ -11,6 +11,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { sortPinnedThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
 import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import { formatLastActivityAge } from "@t3tools/shared/workingActivity";
 
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 
@@ -26,6 +27,14 @@ export { snoozeWakeLabel };
  */
 export type ThreadListV2Status = "approval" | "input" | "working" | "failed" | "ready";
 export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze" | "unsnooze";
+
+export function formatThreadListV2WorkingLabel(
+  lastAgentActivityAt: string | null | undefined,
+  nowMs: number,
+): string {
+  const age = formatLastActivityAge(lastAgentActivityAt, nowMs);
+  return age === null ? "Working" : `Working · last ${age}`;
+}
 
 export function resolveThreadListV2SnoozeMenuSelection(input: {
   readonly event: string;

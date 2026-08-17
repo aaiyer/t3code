@@ -239,6 +239,21 @@ function buildAssistantTimelineEntry(text: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("shows the latest agent activity while a thread is working", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnInProgress
+        activeTurnStartedAt={MESSAGE_CREATED_AT}
+        lastAgentActivityAt="2999-01-01T00:00:00.000Z"
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain("Last activity just now");
+  });
+
   it("uses the larger leading inset only when the top fade is enabled", () => {
     const timelineEntries = [buildUserTimelineEntry("Hello")];
 

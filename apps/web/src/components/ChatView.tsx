@@ -6606,6 +6606,7 @@ function ChatViewContent(props: ChatViewProps) {
                 workingStepLabel={workingStepLabel}
                 activeTurnInProgress={isWorking || !latestTurnSettled}
                 activeTurnStartedAt={activeWorkStartedAt}
+                lastAgentActivityAt={activeThread.lastAgentActivityAt}
                 listRef={legendListRef}
                 timelineEntries={timelineEntries}
                 latestTurn={activeLatestTurn}

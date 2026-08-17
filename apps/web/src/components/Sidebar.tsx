@@ -122,7 +122,7 @@ import { cn } from "~/lib/utils";
 import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
 import {
   buildBulkTitleRegenerationContextMenuItem,
-  formatWorkingDurationLabel,
+  formatWorkingTimingLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
   isSidebarNestedLinkClick,
@@ -229,19 +229,31 @@ function JumpHintBadge(props: { label: string }) {
   );
 }
 
-// Self-ticking so only this span re-renders each second, not the whole row.
-function WorkingDuration(props: { startedAt: string | null }) {
-  const startedMs = props.startedAt !== null ? Date.parse(props.startedAt) : Number.NaN;
-  const [, setTick] = useState(0);
+// Imperatively updates only this span every five seconds, avoiding a React
+// commit for every working row on every tick.
+function WorkingTiming(props: {
+  startedAt: string | null;
+  lastAgentActivityAt: string | null | undefined;
+}) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const format = () =>
+    formatWorkingTimingLabel({
+      startedAt: props.startedAt,
+      lastAgentActivityAt: props.lastAgentActivityAt,
+    });
   useEffect(() => {
-    if (Number.isNaN(startedMs)) return;
-    const id = window.setInterval(() => setTick((tick) => tick + 1), 1_000);
+    const updateText = () => {
+      if (textRef.current) textRef.current.textContent = format();
+    };
+    updateText();
+    const id = window.setInterval(updateText, 5_000);
     return () => window.clearInterval(id);
-  }, [startedMs]);
-  if (Number.isNaN(startedMs)) return null;
+  }, [props.lastAgentActivityAt, props.startedAt]);
+  const initialText = format();
+  if (initialText.length === 0) return null;
   return (
-    <span className="font-mono tabular-nums">
-      {formatWorkingDurationLabel(Date.now() - startedMs)}
+    <span ref={textRef} className="font-mono tabular-nums">
+      {initialText}
     </span>
   );
 }
@@ -1454,7 +1466,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                         <span role="status">{topStatus.label}</span>
                         {status === "working" ? (
                           <span aria-hidden>
-                            <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                            <WorkingTiming
+                              startedAt={resolveWorkingStartedAt(thread)}
+                              lastAgentActivityAt={thread.lastAgentActivityAt}
+                            />
                           </span>
                         ) : null}
                       </span>
