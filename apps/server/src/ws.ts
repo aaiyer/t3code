@@ -74,7 +74,6 @@ import {
   projectActivityEvent,
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
-import { SHELL_SUMMARY_ACTIVITY_KINDS } from "./orchestration/Layers/ProjectionPipeline.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -321,23 +320,6 @@ const SHELL_RESUME_MAX_GAP = 1_000;
 // hundreds of thousands of events behind have OOM-killed servers on large
 // databases. Past this gap the client is reset with a fresh thread snapshot.
 const THREAD_RESUME_MAX_GAP = 1_000;
-
-function isShellRelevantEvent(event: OrchestrationEvent): boolean {
-  if (
-    event.type === "thread.message-sent" &&
-    event.payload.streaming &&
-    event.payload.role === "assistant"
-  ) {
-    return false;
-  }
-  if (
-    event.type === "thread.activity-appended" &&
-    !SHELL_SUMMARY_ACTIVITY_KINDS.has(event.payload.activity.kind)
-  ) {
-    return false;
-  }
-  return true;
-}
 
 function toAuthAccessStreamEvent(
   change: PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange,
@@ -720,9 +702,6 @@ const makeWsRpcLayer = (
           }
           const latestByAggregate = new Map<string, OrchestrationEvent>();
           for (const event of events) {
-            if (!isShellRelevantEvent(event)) {
-              continue;
-            }
             latestByAggregate.set(`${event.aggregateKind}:${event.aggregateId}`, event);
           }
           const survivors = Array.from(latestByAggregate.values()).sort(

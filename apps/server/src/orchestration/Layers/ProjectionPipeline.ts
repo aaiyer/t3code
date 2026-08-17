@@ -1198,9 +1198,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               event.payload.createdAt > existingRow.value.latestUserMessageAt)
               ? event.payload.createdAt
               : existingRow.value.latestUserMessageAt;
+          const lastAgentActivityAt =
+            event.payload.role === "assistant" &&
+            (existingRow.value.lastAgentActivityAt === null ||
+              existingRow.value.lastAgentActivityAt === undefined ||
+              event.payload.updatedAt > existingRow.value.lastAgentActivityAt)
+              ? event.payload.updatedAt
+              : (existingRow.value.lastAgentActivityAt ?? null);
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestUserMessageAt,
+            lastAgentActivityAt,
             // Streaming assistant chunks arrive many times per second and
             // change no shell-visible field; leaving updatedAt untouched lets
             // the shell stream skip per-chunk upsert fan-out (toShellStreamEvent).
@@ -1213,12 +1221,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.activity-appended": {
-          // Non-summary activities (command output, file edits, progress, ...)
-          // change no shell-visible field: the sidebar timestamp prefers
-          // latestUserMessageAt and status pills derive from session/approval
-          // state. Skip the row churn entirely so high-volume activity streams
-          // don't bump updatedAt (and fan out shell upserts) per event.
           if (!SHELL_SUMMARY_ACTIVITY_KINDS.has(event.payload.activity.kind)) {
+            const existingRow = yield* projectionThreadRepository.getById({
+              threadId: event.payload.threadId,
+            });
+            if (
+              Option.isNone(existingRow) ||
+              (existingRow.value.lastAgentActivityAt !== null &&
+                existingRow.value.lastAgentActivityAt !== undefined &&
+                existingRow.value.lastAgentActivityAt >= event.payload.activity.createdAt)
+            ) {
+              return;
+            }
+            // Preserve the newer activity clock without rebuilding message,
+            // plan, activity, and approval history. updatedAt stays stable so
+            // tool chatter does not reorder the sidebar.
+            yield* projectionThreadRepository.upsert({
+              ...existingRow.value,
+              lastAgentActivityAt: event.payload.activity.createdAt,
+            });
             return;
           }
           const existingRow = yield* projectionThreadRepository.getById({
