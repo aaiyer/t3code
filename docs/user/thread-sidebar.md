@@ -5,9 +5,9 @@ Pinned threads are shown independently of their project, including when you conn
 one environment.
 
 While a thread is working, its status shows how long it has been since T3 Code last received
-meaningful agent activity. Web and desktop also show the total working time. Agent activity includes
-assistant output, tool progress, plan changes, and sub-agent updates. The activity age is hidden once
-the thread is no longer working.
+agent activity or liveness. Web and desktop also show the total working time. Agent activity includes
+assistant output, tool progress and runtime heartbeats during long-running tools, plan changes, and
+sub-agent updates. The activity age is hidden once the thread is no longer working.
 
 On web and desktop, drag a pinned thread to change its position. On mobile, open the thread's menu
 and choose **Move up** or **Move down**. The order is stored by the server and appears on your

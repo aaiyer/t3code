@@ -322,6 +322,9 @@ describe("ProviderRuntimeIngestion", () => {
       engine,
       dispatch,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      readShell: (threadId: ThreadId) =>
+        Effect.runPromise(snapshotQuery.getThreadShellById(threadId)),
+      readEvents: () => Effect.runPromise(Stream.runCollect(engine.readEvents(0))),
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
@@ -456,6 +459,41 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("ready");
     expect(thread.session?.lastError).toBeNull();
+  });
+
+  it("records throttled parent-tool runtime heartbeats as agent activity", async () => {
+    const harness = await createHarness();
+
+    for (const [eventId, createdAt, elapsedSeconds] of [
+      ["evt-tool-heartbeat-1", "2026-01-01T00:00:10.000Z", 10],
+      ["evt-tool-heartbeat-throttled", "2026-01-01T00:00:12.000Z", 12],
+      ["evt-tool-heartbeat-2", "2026-01-01T00:00:16.000Z", 16],
+    ] as const) {
+      harness.emit({
+        type: "tool.progress",
+        eventId: asEventId(eventId),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt,
+        payload: {
+          toolName: "mcp_tool",
+          elapsedSeconds,
+        },
+      });
+    }
+    await harness.drain();
+
+    const events = await harness.readEvents();
+    expect(Array.from(events).map((event) => event.type)).toContain(
+      "thread.agent-activity-recorded",
+    );
+    const thread = await harness.readShell(asThreadId("thread-1"));
+    expect(thread._tag).toBe("Some");
+    if (thread._tag === "Some") {
+      expect(thread.value.lastAgentActivityAt).toBe("2026-01-01T00:00:16.000Z");
+      expect(thread.value.updatedAt).toBe("2026-01-01T00:00:00.000Z");
+    }
+    expect((await harness.readModel()).threads[0]?.activities).toEqual([]);
   });
 
   it("clears active turn when provider session becomes ready", async () => {

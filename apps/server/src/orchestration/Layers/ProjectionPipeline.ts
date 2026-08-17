@@ -1186,6 +1186,27 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.agent-activity-recorded": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          if (
+            existingRow.value.lastAgentActivityAt !== null &&
+            existingRow.value.lastAgentActivityAt !== undefined &&
+            existingRow.value.lastAgentActivityAt >= event.occurredAt
+          ) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            lastAgentActivityAt: event.occurredAt,
+          });
+          return;
+        }
+
         case "thread.session-set": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
