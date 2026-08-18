@@ -3,6 +3,7 @@ import { PauseIcon, PencilIcon, PlayIcon, TargetIcon, XIcon } from "lucide-react
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const compactNumber = new Intl.NumberFormat(undefined, {
   notation: "compact",
@@ -55,9 +56,16 @@ export function GoalProgressRow(props: {
             <span className="shrink-0 text-[11px] font-semibold text-foreground">
               {statusLabels[goal.status]}
             </span>
-            <span className="truncate text-xs text-muted-foreground" title={goal.objective}>
-              {goal.objective}
-            </span>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span className="truncate text-xs text-muted-foreground">{goal.objective}</span>
+                }
+              />
+              <TooltipPopup className="max-w-120 whitespace-normal leading-tight wrap-anywhere">
+                {goal.objective}
+              </TooltipPopup>
+            </Tooltip>
           </div>
           {usage.length > 0 ? (
             <div className="truncate text-[10px] text-muted-foreground/70">{usage.join(" · ")}</div>

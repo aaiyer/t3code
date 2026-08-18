@@ -2239,13 +2239,18 @@ function FileChangeEntryDetails({ details }: { details: DerivedFileChangeWorkEnt
       {displayFiles.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {displayFiles.map((file) => (
-            <span
-              key={`${details.id}:expanded-file:${file.path}`}
-              className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
-              title={file.displayPath}
-            >
-              {file.displayPath}
-            </span>
+            <Tooltip key={`${details.id}:expanded-file:${file.path}`}>
+              <TooltipTrigger
+                render={
+                  <span className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75">
+                    {file.displayPath}
+                  </span>
+                }
+              />
+              <TooltipPopup className="max-w-120 whitespace-normal leading-tight wrap-anywhere">
+                {file.displayPath}
+              </TooltipPopup>
+            </Tooltip>
           ))}
         </div>
       )}
@@ -2302,9 +2307,16 @@ function InlineFileDiffHeader({
 
   return (
     <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border/55 bg-background/80 px-2 py-1 text-[11px]">
-      <span className="min-w-0 truncate font-mono text-foreground/85" title={displayPath}>
-        {displayPath}
-      </span>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span className="min-w-0 truncate font-mono text-foreground/85">{displayPath}</span>
+          }
+        />
+        <TooltipPopup className="max-w-120 whitespace-normal leading-tight wrap-anywhere">
+          {displayPath}
+        </TooltipPopup>
+      </Tooltip>
       <span className="shrink-0">
         <DiffStatLabel additions={additions} deletions={deletions} />
       </span>
